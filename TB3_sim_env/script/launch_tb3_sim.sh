@@ -41,8 +41,8 @@ case $LAUNCH_TYPE in
         SIM_PID=$!
         ;;
     world)
-        echo "Launching Turtlebot3 in Turtlebot3 world..."
-        ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py &
+        echo "Launching Turtlebot3 in Turtlebot3 world with stable configuration..."
+        ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py x_pose:=-2.0 y_pose:=-0.5 z_pose:=0.01 &
         SIM_PID=$!
         ;;
     house)

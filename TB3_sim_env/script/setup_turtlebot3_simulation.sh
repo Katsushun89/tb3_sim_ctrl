@@ -108,14 +108,14 @@ source /opt/ros/jazzy/setup.bash
 
 # Build only simulation-related packages (skip packages that require DynamixelSDK)
 echo "Building simulation packages only..."
-echo "Note: Skipping turtlebot3_node, turtlebot3_bringup as they require DynamixelSDK for real hardware"
+echo "Note: Skipping turtlebot3_node, turtlebot3_bringup (require DynamixelSDK for real hardware)"
+echo "Note: Skipping turtlebot3_fake_node to avoid conflicts with Gazebo simulation"
 
-# Build specific packages needed for simulation
+# Build specific packages needed for simulation (excluding turtlebot3_fake_node to avoid conflicts)
 colcon build --symlink-install --packages-select \
     turtlebot3_msgs \
     turtlebot3_description \
     turtlebot3_gazebo \
-    turtlebot3_fake_node \
     turtlebot3_cartographer \
     turtlebot3_navigation2 \
     turtlebot3_teleop
