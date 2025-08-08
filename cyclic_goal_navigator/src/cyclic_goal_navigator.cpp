@@ -5,6 +5,8 @@
 #include <mutex>
 #include <random>
 #include <limits>
+#include <cmath>
+#include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -13,6 +15,8 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
 
@@ -121,11 +125,11 @@ public:
 
     publish_timer_ = this->create_wall_timer(
       std::chrono::milliseconds(publish_delay_ms),
-      std::bind(&GoalNavigator::maybe_send_random_goal, this));
+      std::bind(&GoalNavigator::maybe_send_directional_goal, this));
   }
 
 private:
-  void maybe_send_random_goal()
+  void maybe_send_directional_goal()
   {
     if (goal_in_progress_) {
       return;
@@ -148,12 +152,12 @@ private:
       return;
     }
 
-    RCLCPP_INFO(this->get_logger(), "=== Coordinate System Debug ===");
+    RCLCPP_INFO(this->get_logger(), "=== Directional Goal Selection ===");
     RCLCPP_INFO(this->get_logger(), "Source frame: %s", source_frame.c_str());
     RCLCPP_INFO(this->get_logger(), "Target frame: %s", target_frame_.c_str());
     RCLCPP_INFO(this->get_logger(), "Available cells: %zu", cells.size());
 
-    // ロボットの現在位置（source_frame基準, 多くは local_costmap の frame と一致: 例 odom）
+    // ロボットの現在位置と向きを取得
     geometry_msgs::msg::TransformStamped tf_bl_src;
     try {
       tf_bl_src = tf_buffer_->lookupTransform(
@@ -162,32 +166,134 @@ private:
       RCLCPP_WARN(this->get_logger(), "TF transform failed (robot pose): %s", ex.what());
       return;
     }
+
     const double robot_x = tf_bl_src.transform.translation.x;
     const double robot_y = tf_bl_src.transform.translation.y;
-    RCLCPP_INFO(this->get_logger(), "Robot position in %s: (%.3f, %.3f)", source_frame.c_str(), robot_x, robot_y);
-
-    // 最遠の安全セルを選択（距離二乗で比較）
-    double max_dist2 = -std::numeric_limits<double>::infinity();
-    std::pair<double,double> best_cell {cells.front().first, cells.front().second};
-    for (const auto & cell : cells) {
-      const double dx = cell.first  - robot_x;
-      const double dy = cell.second - robot_y;
-      const double dist2 = dx*dx + dy*dy;
-      if (dist2 > max_dist2) {
-        max_dist2 = dist2;
-        best_cell = cell;
-      }
+    
+    // ロボットの向き（yaw角）を取得
+    double robot_yaw = 0.0;
+    try {
+      tf2::Quaternion q;
+      tf2::fromMsg(tf_bl_src.transform.rotation, q);
+      tf2::Matrix3x3 m(q);
+      double roll, pitch, yaw;
+      m.getRPY(roll, pitch, yaw);
+      robot_yaw = yaw;
+    } catch (const std::exception & ex) {
+      RCLCPP_WARN(this->get_logger(), "Failed to extract robot yaw: %s", ex.what());
+      return;
     }
 
-    RCLCPP_INFO(this->get_logger(), "max_dist2: %f, best_cell: (%.3f, %.3f)", max_dist2, best_cell.first, best_cell.second);
+    RCLCPP_INFO(this->get_logger(), "Robot position in %s: (%.3f, %.3f)", source_frame.c_str(), robot_x, robot_y);
+    RCLCPP_INFO(this->get_logger(), "Robot yaw: %.3f rad (%.1f deg)", robot_yaw, robot_yaw * 180.0 / M_PI);
 
+    // No.1: 前方90度コーン（前方方向から左右45度）の最遠セルを探索
+    auto forward_cell = find_farthest_in_sector(cells, robot_x, robot_y, robot_yaw, M_PI/4);
+    
+    if (forward_cell.has_value()) {
+      double dist = std::sqrt(forward_cell->first * forward_cell->first + 
+                             forward_cell->second * forward_cell->second);
+      
+      RCLCPP_INFO(this->get_logger(), "No.1: Forward cell found at (%.3f, %.3f), distance: %.3f", 
+        forward_cell->first, forward_cell->second, dist);
+      
+      if (dist >= 1.0) {  // 1m以上の場合、前方ゴールを採用
+        RCLCPP_INFO(this->get_logger(), "No.1: Forward goal selected (distance >= 1.0m)");
+        send_nav2_goal(*forward_cell, source_frame);
+        return;
+      } else {
+        RCLCPP_INFO(this->get_logger(), "No.1: Forward goal too close (%.3fm < 1.0m), trying No.2", dist);
+      }
+    } else {
+      RCLCPP_INFO(this->get_logger(), "No.1: No forward cell found, trying No.2");
+    }
+
+    // No.2: 左右90度コーン（真横から±45度）の最遠セルを探索
+    auto side_cell = find_farthest_in_side_sectors(cells, robot_x, robot_y, robot_yaw);
+    
+    if (side_cell.has_value()) {
+      RCLCPP_INFO(this->get_logger(), "No.2: Side goal selected at (%.3f, %.3f)", 
+        side_cell->first, side_cell->second);
+      send_nav2_goal(*side_cell, source_frame);
+    } else {
+      RCLCPP_WARN(this->get_logger(), "No suitable goal found in any direction");
+    }
+  }
+
+  std::optional<std::pair<double, double>> find_farthest_in_sector(
+    const std::vector<std::pair<double, double>>& cells,
+    double robot_x, double robot_y, double center_yaw, double half_angle)
+  {
+    double max_dist2 = 0.0;
+    std::optional<std::pair<double, double>> best_cell;
+
+    for (const auto & cell : cells) {
+      // ロボット中心からの相対座標
+      double dx = cell.first - robot_x;
+      double dy = cell.second - robot_y;
+      
+      // セルの角度を計算（ロボット中心から見た角度）
+      double cell_angle = std::atan2(dy, dx);
+      double angle_diff = std::abs(normalize_angle(cell_angle - center_yaw));
+      
+      // 指定範囲内かチェック
+      if (angle_diff <= half_angle) {
+        double dist2 = dx * dx + dy * dy;
+        if (dist2 > max_dist2) {
+          max_dist2 = dist2;
+          best_cell = cell;
+        }
+      }
+    }
+    
+    return best_cell;
+  }
+
+  std::optional<std::pair<double, double>> find_farthest_in_side_sectors(
+    const std::vector<std::pair<double, double>>& cells,
+    double robot_x, double robot_y, double robot_yaw)
+  {
+    // 左側（robot_yaw + π/2）と右側（robot_yaw - π/2）の両方を探索
+    auto left_cell = find_farthest_in_sector(cells, robot_x, robot_y, robot_yaw + M_PI/2, M_PI/4);   // 左90度±45度
+    auto right_cell = find_farthest_in_sector(cells, robot_x, robot_y, robot_yaw - M_PI/2, M_PI/4);  // 右90度±45度
+    
+    // 左右で最も遠いセルを選択
+    if (left_cell.has_value() && right_cell.has_value()) {
+      double left_dx = left_cell->first - robot_x;
+      double left_dy = left_cell->second - robot_y;
+      double right_dx = right_cell->first - robot_x;
+      double right_dy = right_cell->second - robot_y;
+      
+      double left_dist2 = left_dx * left_dx + left_dy * left_dy;
+      double right_dist2 = right_dx * right_dx + right_dy * right_dy;
+      
+      return (left_dist2 > right_dist2) ? left_cell : right_cell;
+    } else if (left_cell.has_value()) {
+      return left_cell;
+    } else if (right_cell.has_value()) {
+      return right_cell;
+    }
+    
+    return std::nullopt;
+  }
+
+  double normalize_angle(double angle)
+  {
+    // 角度を-π～πに正規化
+    while (angle > M_PI) angle -= 2.0 * M_PI;
+    while (angle < -M_PI) angle += 2.0 * M_PI;
+    return angle;
+  }
+
+  void send_nav2_goal(const std::pair<double, double>& cell, const std::string& source_frame)
+  {
     // source_frame上のセル座標をPointStampedで表現
     geometry_msgs::msg::PointStamped pt_src, pt_dst;
     pt_src.header.frame_id = source_frame;
     pt_src.header.stamp.sec = 0;
     pt_src.header.stamp.nanosec = 0;  // Time=0 -> latest transform
-    pt_src.point.x = best_cell.first;
-    pt_src.point.y = best_cell.second;
+    pt_src.point.x = cell.first;
+    pt_src.point.y = cell.second;
     pt_src.point.z = 0.0;
 
     RCLCPP_INFO(this->get_logger(), "Point in %s: (%.3f, %.3f)", source_frame.c_str(), pt_src.point.x, pt_src.point.y);
@@ -252,7 +358,7 @@ private:
           case rclcpp_action::ResultCode::SUCCEEDED:
             RCLCPP_INFO(this->get_logger(), "Goal reached. Scheduling next goal.");
             // 次のゴールをすぐに再送
-            this->maybe_send_random_goal();
+            this->maybe_send_directional_goal();
             break;
           case rclcpp_action::ResultCode::ABORTED:
             RCLCPP_WARN(this->get_logger(), "Goal aborted. Will retry later.");
@@ -266,9 +372,9 @@ private:
         }
       };
 
-    RCLCPP_INFO(this->get_logger(), "Sending NavigateToPose to farthest safe cell (%.3f, %.3f) in %s",
+    RCLCPP_INFO(this->get_logger(), "Sending NavigateToPose to directional goal (%.3f, %.3f) in %s",
       goal_msg.pose.pose.position.x, goal_msg.pose.pose.position.y, target_frame_.c_str());
-    RCLCPP_INFO(this->get_logger(), "=== End Debug ===");
+    RCLCPP_INFO(this->get_logger(), "=== End Directional Selection ===");
 
     action_client_->async_send_goal(goal_msg, send_goal_options);
   }
