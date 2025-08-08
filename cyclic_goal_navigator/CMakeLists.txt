@@ -14,6 +14,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 # 実行可能ファイルの作成
 add_executable(cyclic_goal_navigator_node
@@ -29,6 +30,7 @@ ament_target_dependencies(cyclic_goal_navigator_node
   tf2_ros
   tf2_geometry_msgs
   nav2_msgs
+  visualization_msgs
 )
 
 # インストール設定

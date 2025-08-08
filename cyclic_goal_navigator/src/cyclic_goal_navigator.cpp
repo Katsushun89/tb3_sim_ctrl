@@ -19,6 +19,8 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <visualization_msgs/msg/marker.hpp>
 
 using namespace std::chrono_literals;
 
@@ -122,6 +124,10 @@ public:
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
     action_client_ = rclcpp_action::create_client<NavigateToPose>(this, action_name_);
+
+    // RViz表示用のマーカーパブリッシャー
+    marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/goal_markers", 10);
 
     publish_timer_ = this->create_wall_timer(
       std::chrono::milliseconds(publish_delay_ms),
@@ -376,6 +382,9 @@ private:
       goal_msg.pose.pose.position.x, goal_msg.pose.pose.position.y, target_frame_.c_str());
     RCLCPP_INFO(this->get_logger(), "=== End Directional Selection ===");
 
+    // RVizにゴールマーカーを表示
+    publish_goal_marker(goal_msg.pose.pose.position.x, goal_msg.pose.pose.position.y, target_frame_);
+
     action_client_->async_send_goal(goal_msg, send_goal_options);
   }
 
@@ -393,8 +402,76 @@ private:
   std::string target_frame_;
   bool goal_in_progress_ {false};
 
+  // RViz表示用
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+  int marker_id_ {0};
+
   // Timer
   rclcpp::TimerBase::SharedPtr publish_timer_;
+
+private:
+  void publish_goal_marker(double x, double y, const std::string& frame_id)
+  {
+    auto marker_array = visualization_msgs::msg::MarkerArray();
+    
+    // ゴール位置のマーカー（赤い矢印）
+    auto goal_marker = visualization_msgs::msg::Marker();
+    goal_marker.header.frame_id = frame_id;
+    goal_marker.header.stamp = this->get_clock()->now();
+    goal_marker.ns = "goal_position";
+    goal_marker.id = marker_id_++;
+    goal_marker.type = visualization_msgs::msg::Marker::ARROW;
+    goal_marker.action = visualization_msgs::msg::Marker::ADD;
+    
+    goal_marker.pose.position.x = x;
+    goal_marker.pose.position.y = y;
+    goal_marker.pose.position.z = 0.1;  // 少し浮かせる
+    goal_marker.pose.orientation.w = 1.0;
+    
+    goal_marker.scale.x = 0.5;  // 矢印の長さ
+    goal_marker.scale.y = 0.1;  // 矢印の幅
+    goal_marker.scale.z = 0.1;  // 矢印の高さ
+    
+    goal_marker.color.r = 1.0;  // 赤色
+    goal_marker.color.g = 0.0;
+    goal_marker.color.b = 0.0;
+    goal_marker.color.a = 0.8;  // 透明度
+    
+    marker_array.markers.push_back(goal_marker);
+    
+    // ゴール位置のテキストラベル
+    auto text_marker = visualization_msgs::msg::Marker();
+    text_marker.header.frame_id = frame_id;
+    text_marker.header.stamp = this->get_clock()->now();
+    text_marker.ns = "goal_text";
+    text_marker.id = marker_id_++;
+    text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+    text_marker.action = visualization_msgs::msg::Marker::ADD;
+    
+    text_marker.pose.position.x = x;
+    text_marker.pose.position.y = y;
+    text_marker.pose.position.z = 0.3;  // 矢印より上に表示
+    text_marker.pose.orientation.w = 1.0;
+    
+    text_marker.scale.z = 0.2;  // テキストサイズ
+    
+    text_marker.color.r = 1.0;  // 白色
+    text_marker.color.g = 1.0;
+    text_marker.color.b = 1.0;
+    text_marker.color.a = 1.0;
+    
+    // 座標を表示
+    char text_buffer[100];
+    snprintf(text_buffer, sizeof(text_buffer), "Goal\n(%.2f, %.2f)", x, y);
+    text_marker.text = text_buffer;
+    
+    marker_array.markers.push_back(text_marker);
+    
+    // マーカーをパブリッシュ
+    marker_pub_->publish(marker_array);
+    
+    RCLCPP_INFO(this->get_logger(), "Published goal marker at (%.3f, %.3f) in %s frame", x, y, frame_id.c_str());
+  }
 };
 
 int main(int argc, char * argv[])
