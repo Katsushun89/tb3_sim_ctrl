@@ -11,6 +11,7 @@
 #include <set>
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <tf2/time.h>
@@ -58,6 +59,57 @@ public:
   {
     std::lock_guard<std::mutex> lock(mutex_);
     return costmap_frame_id_;
+  }
+
+  bool is_goal_valid(double goal_x, double goal_y)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!last_grid_) return false;
+
+    auto & g = *last_grid_;
+    const double res = g.info.resolution;
+    const double ox = g.info.origin.position.x;
+    const double oy = g.info.origin.position.y;
+    const int W = g.info.width;
+    const int H = g.info.height;
+
+    // ゴール位置をマップ座標に変換
+    int mx = static_cast<int>(std::floor((goal_x - ox) / res));
+    int my = static_cast<int>(std::floor((goal_y - oy) / res));
+    
+    // 境界チェック
+    if (mx < 0 || mx >= W || my < 0 || my >= H) {
+      return false;  // マップ外はNG
+    }
+    
+    // ゴール周辺（3x3）のセルをチェック
+    for (int dx = -1; dx <= 1; ++dx) {
+      for (int dy = -1; dy <= 1; ++dy) {
+        int check_x = mx + dx;
+        int check_y = my + dy;
+        
+        // 境界チェック
+        if (check_x < 0 || check_x >= W || check_y < 0 || check_y >= H) {
+          return false;  // 周辺がマップ外はNG
+        }
+        
+        // 周辺セルのコストチェック
+        int idx = check_y * W + check_x;
+        int8_t cost = g.data[idx];
+        
+        // 周辺に高コスト（障害物）があるかチェック
+        if (cost >= 80) {  // 80以上は危険
+          return false;
+        }
+        
+        // unknownセル（-1）が多すぎる場合も危険
+        if (cost < 0) {
+          return false;
+        }
+      }
+    }
+    
+    return true;  // ゴールとして妥当
   }
 
   bool is_line_free(double x0, double y0, double x1, double y1,
@@ -178,6 +230,11 @@ public:
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
       "/goal_markers", 10);
 
+    // Nav2の経路を永続化するためのサブスクライバー
+    path_sub_ = this->create_subscription<nav_msgs::msg::Path>(
+      "/plan", 10,
+      std::bind(&GoalNavigator::path_callback, this, std::placeholders::_1));
+
     publish_timer_ = this->create_wall_timer(
       std::chrono::milliseconds(publish_delay_ms),
       std::bind(&GoalNavigator::maybe_send_directional_goal, this));
@@ -242,8 +299,8 @@ private:
     RCLCPP_INFO(this->get_logger(), "Robot position in %s: (%.3f, %.3f)", source_frame.c_str(), robot_x, robot_y);
     RCLCPP_INFO(this->get_logger(), "Robot yaw: %.3f rad (%.1f deg)", robot_yaw, robot_yaw * 180.0 / M_PI);
 
-    // No.1: 前方90度コーン（前方方向から左右45度）の最遠セルを探索
-    auto forward_cell = find_farthest_in_sector(cells, robot_x, robot_y, robot_yaw, M_PI/4);
+    // No.1: 前方90度を5度刻みで探索（前方方向から左右45度）
+    auto forward_cell = find_best_forward_goal_detailed(cells, robot_x, robot_y, robot_yaw);
     
     if (forward_cell.has_value()) {
       double dist = std::sqrt(forward_cell->first * forward_cell->first + 
@@ -281,6 +338,61 @@ private:
     } else {
       RCLCPP_WARN(this->get_logger(), "No suitable unblocked goal found in any direction");
     }
+  }
+
+  std::optional<std::pair<double, double>> find_best_forward_goal_detailed(
+    const std::vector<std::pair<double, double>>& cells,
+    double robot_x, double robot_y, double robot_yaw)
+  {
+    // 前方90度を5度刻みで探索（前方方向±45度）
+    std::vector<std::pair<double, double>> all_forward_candidates;
+    
+    for (double angle_offset = -45.0; angle_offset <= 45.0; angle_offset += 5.0) {
+      double angle = robot_yaw + (angle_offset * M_PI / 180.0);
+      auto sector_candidates = find_candidates_in_sector(
+        cells, robot_x, robot_y, angle, M_PI/36, 5);  // 5度の扇形で各5個
+      all_forward_candidates.insert(all_forward_candidates.end(),
+                                   sector_candidates.begin(),
+                                   sector_candidates.end());
+    }
+    
+    RCLCPP_INFO(this->get_logger(), "No.1: Found %zu forward candidates from ±45 degrees",
+                all_forward_candidates.size());
+    
+    // 重複を除去
+    std::set<std::pair<int, int>> seen_cells;
+    std::vector<std::pair<double, std::pair<double, double>>> forward_candidates;
+    
+    for (const auto& cell : all_forward_candidates) {
+      int grid_x = static_cast<int>(cell.first / 0.1);
+      int grid_y = static_cast<int>(cell.second / 0.1);
+      
+      if (seen_cells.find({grid_x, grid_y}) == seen_cells.end()) {
+        seen_cells.insert({grid_x, grid_y});
+        double dx = cell.first - robot_x;
+        double dy = cell.second - robot_y;
+        double dist2 = dx * dx + dy * dy;
+        forward_candidates.push_back({dist2, cell});
+      }
+    }
+    
+    // 距離の降順でソート（最も遠いものから）
+    std::sort(forward_candidates.begin(), forward_candidates.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    // 最も遠い候補から順にゴール妥当性をチェック
+    for (const auto& [dist2, candidate] : forward_candidates) {
+      if (costmap_subscriber_->is_goal_valid(candidate.first, candidate.second)) {
+        RCLCPP_INFO(this->get_logger(), "No.1: Valid forward candidate selected at (%.3f, %.3f)", 
+                    candidate.first, candidate.second);
+        return candidate;
+      } else {
+        RCLCPP_INFO(this->get_logger(), "No.1: Forward candidate at (%.3f, %.3f) rejected (invalid goal area)", 
+                    candidate.first, candidate.second);
+      }
+    }
+    
+    return std::nullopt;
   }
 
   std::optional<std::pair<double, double>> find_farthest_in_sector(
@@ -412,7 +524,7 @@ private:
                                            /*occ_threshold=*/90,
                                            /*block_on_unknown=*/false);  // unknownセルは通行可能とみなす
       
-      if (line_free) {
+      if (line_free && costmap_subscriber_->is_goal_valid(cell.first, cell.second)) {
         RCLCPP_INFO(this->get_logger(), "Found valid side goal at (%.3f, %.3f) distance: %.3f (LOS OK, tested %d candidates)",
                     cell.first, cell.second, std::sqrt(dist2), tested_count);
         return cell;
@@ -423,31 +535,42 @@ private:
         double dy = cell.second - robot_y;
         double distance = std::sqrt(dist2);
         
-        // 中間点での簡易チェック
-        bool mostly_clear = true;
-        for (double ratio = 0.2; ratio <= 0.8; ratio += 0.2) {
+        // より寛容な部分チェック：経路の50%がクリアなら許可
+        int clear_segments = 0;
+        int total_segments = 4;
+        
+        for (double ratio = 0.25; ratio <= 1.0; ratio += 0.25) {
           double check_x = robot_x + dx * ratio;
           double check_y = robot_y + dy * ratio;
           
-          // is_line_freeを使って部分チェック
-          if (!costmap_subscriber_->is_line_free(robot_x, robot_y, check_x, check_y, 90, false)) {
-            mostly_clear = false;
-            break;
+          // より短い距離での部分チェック
+          if (costmap_subscriber_->is_line_free(robot_x, robot_y, check_x, check_y, 95, false)) {
+            clear_segments++;
           }
         }
         
-        if (mostly_clear) {
-          RCLCPP_INFO(this->get_logger(), "Found partially clear side goal at (%.3f, %.3f) distance: %.3f (tested %d candidates)",
-                      cell.first, cell.second, distance, tested_count);
+        double clear_ratio = static_cast<double>(clear_segments) / total_segments;
+        if (clear_ratio >= 0.5 && costmap_subscriber_->is_goal_valid(cell.first, cell.second)) {  // 50%以上クリア + ゴール妥当性
+          RCLCPP_INFO(this->get_logger(), "Found partially clear side goal at (%.3f, %.3f) distance: %.3f (%.0f%% clear, tested %d candidates)",
+                      cell.first, cell.second, distance, clear_ratio * 100, tested_count);
           return cell;
         } else {
-          RCLCPP_INFO(this->get_logger(), "Side candidate %d at (%.3f, %.3f) distance: %.3f blocked",
-                      tested_count, cell.first, cell.second, distance);
+          RCLCPP_INFO(this->get_logger(), "Side candidate %d at (%.3f, %.3f) distance: %.3f blocked (%.0f%% clear)",
+                      tested_count, cell.first, cell.second, distance, clear_ratio * 100);
         }
       }
     }
     
     RCLCPP_WARN(this->get_logger(), "No.2: All %d side candidates were blocked", tested_count);
+    
+    // 緊急脱出モード：全候補がブロックされた場合は最も近い候補を強制選択
+    if (!all_candidates.empty()) {
+      auto emergency_goal = all_candidates[all_candidates.size() - 1].second; // 最も近い候補
+      double emergency_distance = std::sqrt(all_candidates[all_candidates.size() - 1].first);
+      RCLCPP_WARN(this->get_logger(), "EMERGENCY MODE: Selecting closest goal at (%.3f, %.3f) distance: %.3f", 
+                  emergency_goal.first, emergency_goal.second, emergency_distance);
+      return emergency_goal;
+    }
     
     return std::nullopt;
   }
@@ -598,11 +721,55 @@ private:
   // RViz表示用
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   int marker_id_ {0};
+  
+  // 経路永続化用
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_sub_;
+  int path_marker_id_ {1000};  // ゴールマーカーと区別するため1000から開始
 
   // Timer
   rclcpp::TimerBase::SharedPtr publish_timer_;
 
 private:
+  void path_callback(const nav_msgs::msg::Path::SharedPtr msg)
+  {
+    if (msg->poses.empty()) {
+      return;  // 空の経路は無視
+    }
+
+    // PathをLineStripマーカーに変換
+    auto marker_array = visualization_msgs::msg::MarkerArray();
+    auto path_marker = visualization_msgs::msg::Marker();
+    
+    path_marker.header.frame_id = msg->header.frame_id;
+    path_marker.header.stamp = this->get_clock()->now();
+    path_marker.ns = "persistent_paths";
+    path_marker.id = path_marker_id_++;
+    path_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    path_marker.action = visualization_msgs::msg::Marker::ADD;
+    
+    // 線の設定
+    path_marker.scale.x = 0.05;  // 線の太さ 5cm
+    path_marker.color.r = 0.0;
+    path_marker.color.g = 1.0;   // 緑色
+    path_marker.color.b = 0.0;
+    path_marker.color.a = 0.8;   // 透明度
+    
+    // Pathの全ポイントをLineStripに追加
+    for (const auto& pose_stamped : msg->poses) {
+      geometry_msgs::msg::Point point;
+      point.x = pose_stamped.pose.position.x;
+      point.y = pose_stamped.pose.position.y;
+      point.z = 0.1;  // 少し浮かせて表示
+      path_marker.points.push_back(point);
+    }
+    
+    marker_array.markers.push_back(path_marker);
+    marker_pub_->publish(marker_array);
+    
+    RCLCPP_INFO(this->get_logger(), "Persistent path published with %zu points (ID: %d)", 
+                msg->poses.size(), path_marker.id);
+  }
+
   void publish_goal_marker(double x, double y, double yaw, const std::string& frame_id)
   {
     auto marker_array = visualization_msgs::msg::MarkerArray();
