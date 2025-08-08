@@ -1,88 +1,26 @@
 #!/bin/bash
 
-# Turtlebot3 Simulation Environment Setup Script for ROS2 Jazzy
-# This script installs all necessary packages for running Turtlebot3 in Gazebo simulation
+# Turtlebot3 Simulation Build Script for ROS2 Jazzy
+# This script builds Turtlebot3 packages for simulation
 
 set -e
 
 echo "=========================================="
-echo "Turtlebot3 Simulation Setup for ROS2 Jazzy"
+echo "Turtlebot3 Simulation Build for ROS2 Jazzy"
 echo "=========================================="
-
-# Function to check if a package is already cloned
-check_and_clone() {
-    local repo_url=$1
-    local target_dir=$2
-    local branch=$3
-    
-    if [ -d "$target_dir" ]; then
-        echo "Directory $target_dir already exists. Skipping clone."
-    else
-        echo "Cloning $repo_url to $target_dir..."
-        if [ -n "$branch" ]; then
-            git clone -b "$branch" "$repo_url" "$target_dir"
-        else
-            git clone "$repo_url" "$target_dir"
-        fi
-    fi
-}
 
 # Set workspace path
 WORKSPACE_PATH="$HOME/ros2_ws"
-SRC_PATH="$WORKSPACE_PATH/src"
 
 # Check if workspace exists
 if [ ! -d "$WORKSPACE_PATH" ]; then
-    echo "Creating ROS2 workspace at $WORKSPACE_PATH..."
-    mkdir -p "$SRC_PATH"
+    echo "Error: Workspace $WORKSPACE_PATH does not exist!"
+    echo "Please ensure Turtlebot3 packages are installed via Docker build."
+    exit 1
 fi
 
-cd "$SRC_PATH"
-
 echo ""
-echo "Step 1: Installing Gazebo (formerly Ignition) packages..."
-echo "-----------------------------------------------------------"
-echo "Note: ROS2 Jazzy uses the new Gazebo, not Gazebo Classic"
-sudo apt update
-sudo apt install -y \
-    ros-jazzy-ros-gz \
-    ros-jazzy-ros-gz-bridge \
-    ros-jazzy-ros-gz-sim \
-    ros-jazzy-ros-gz-interfaces
-
-echo ""
-echo "Step 2: Installing Turtlebot3 dependencies..."
-echo "----------------------------------------------"
-sudo apt install -y \
-    ros-jazzy-cartographer \
-    ros-jazzy-cartographer-ros \
-    ros-jazzy-navigation2 \
-    ros-jazzy-nav2-bringup
-
-echo ""
-echo "Step 3: Cloning Turtlebot3 packages..."
-echo "---------------------------------------"
-
-# Clone turtlebot3_msgs (using jazzy branch)
-check_and_clone \
-    "https://github.com/ROBOTIS-GIT/turtlebot3_msgs.git" \
-    "$SRC_PATH/turtlebot3_msgs" \
-    "jazzy"
-
-# Clone turtlebot3 (using jazzy branch)
-check_and_clone \
-    "https://github.com/ROBOTIS-GIT/turtlebot3.git" \
-    "$SRC_PATH/turtlebot3" \
-    "jazzy"
-
-# Clone turtlebot3_simulations (using jazzy branch)
-check_and_clone \
-    "https://github.com/ROBOTIS-GIT/turtlebot3_simulations.git" \
-    "$SRC_PATH/turtlebot3_simulations" \
-    "jazzy"
-
-echo ""
-echo "Step 4: Setting up environment variables..."
+echo "Step 1: Setting up environment variables..."
 echo "--------------------------------------------"
 
 # Check if .bashrc already contains the export
@@ -99,7 +37,7 @@ fi
 export TURTLEBOT3_MODEL=burger
 
 echo ""
-echo "Step 5: Building the workspace..."
+echo "Step 2: Building the workspace..."
 echo "----------------------------------"
 cd "$WORKSPACE_PATH"
 
@@ -122,18 +60,15 @@ colcon build --symlink-install --packages-select \
 
 echo ""
 echo "=========================================="
-echo "Setup Complete!"
+echo "Build Complete!"
 echo "=========================================="
 echo ""
 echo "To use the Turtlebot3 simulation environment:"
 echo "1. Source the workspace: source $WORKSPACE_PATH/install/setup.bash"
-echo "2. Launch simulation with empty world:"
-echo "   ros2 launch turtlebot3_gazebo empty_world.launch.py"
-echo "3. Or launch with Turtlebot3 world:"
+echo "2. Launch integrated simulation with Nav2:"
+echo "   ros2 launch tb3_ctrl_bringup tb3_nav2_simple.launch.py"
+echo "3. Or launch individual components:"
 echo "   ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py"
-echo ""
-echo "Note: If using the new Gazebo (not Classic), launch commands may differ."
-echo "Check if turtlebot3_gazebo package supports new Gazebo or use ros_gz_sim."
 echo ""
 echo "Note: Default robot model is set to 'burger'."
 echo "You can change it by setting: export TURTLEBOT3_MODEL=waffle or waffle_pi"
