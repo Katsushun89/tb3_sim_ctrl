@@ -489,14 +489,26 @@ private:
 
     // ロボットのmap座標も確認
     geometry_msgs::msg::TransformStamped tf_bl_map;
+    double robot_x = 0.0, robot_y = 0.0;
     try {
       tf_bl_map = tf_buffer_->lookupTransform(
         target_frame_, "base_link", tf2::TimePointZero, tf2::durationFromSec(0.2));
+      robot_x = tf_bl_map.transform.translation.x;
+      robot_y = tf_bl_map.transform.translation.y;
       RCLCPP_INFO(this->get_logger(), "Robot in %s: (%.3f, %.3f)", target_frame_.c_str(), 
-        tf_bl_map.transform.translation.x, tf_bl_map.transform.translation.y);
+        robot_x, robot_y);
     } catch (const tf2::TransformException & ex) {
       RCLCPP_WARN(this->get_logger(), "Robot TF lookup failed: %s", ex.what());
     }
+
+    // 現在位置からゴール位置への方向を計算
+    double dx = pt_dst.point.x - robot_x;
+    double dy = pt_dst.point.y - robot_y;
+    double goal_yaw = std::atan2(dy, dx);
+    
+    // ヨー角からクォータニオンに変換
+    tf2::Quaternion goal_quat;
+    goal_quat.setRPY(0.0, 0.0, goal_yaw);
 
     // NavigateToPose ゴール作成
     NavigateToPose::Goal goal_msg;
@@ -505,7 +517,10 @@ private:
     goal_msg.pose.pose.position.x = pt_dst.point.x;
     goal_msg.pose.pose.position.y = pt_dst.point.y;
     goal_msg.pose.pose.position.z = 0.0;
-    goal_msg.pose.pose.orientation.w = 1.0;
+    goal_msg.pose.pose.orientation.x = goal_quat.x();
+    goal_msg.pose.pose.orientation.y = goal_quat.y();
+    goal_msg.pose.pose.orientation.z = goal_quat.z();
+    goal_msg.pose.pose.orientation.w = goal_quat.w();
 
     auto send_goal_options = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     send_goal_options.goal_response_callback =
@@ -536,8 +551,17 @@ private:
             this->maybe_send_directional_goal();
             break;
           case rclcpp_action::ResultCode::ABORTED:
-            RCLCPP_WARN(this->get_logger(), "Goal aborted. Will retry later.");
+          {
+            RCLCPP_WARN(this->get_logger(), "Goal aborted. Will retry in 3 seconds.");
+            // 3秒後に再試行
+            auto retry_timer = this->create_wall_timer(
+              std::chrono::seconds(3),
+              [this]() {
+                this->maybe_send_directional_goal();
+              });
+            // ワンショットタイマーなので、コールバック実行後に自動的に停止される
             break;
+          }
           case rclcpp_action::ResultCode::CANCELED:
             RCLCPP_WARN(this->get_logger(), "Goal canceled.");
             break;
@@ -547,12 +571,12 @@ private:
         }
       };
 
-    RCLCPP_INFO(this->get_logger(), "Sending NavigateToPose to directional goal (%.3f, %.3f) in %s",
-      goal_msg.pose.pose.position.x, goal_msg.pose.pose.position.y, target_frame_.c_str());
+    RCLCPP_INFO(this->get_logger(), "Sending NavigateToPose to directional goal (%.3f, %.3f) with yaw %.2f rad in %s",
+      goal_msg.pose.pose.position.x, goal_msg.pose.pose.position.y, goal_yaw, target_frame_.c_str());
     RCLCPP_INFO(this->get_logger(), "=== End Directional Selection ===");
 
-    // RVizにゴールマーカーを表示
-    publish_goal_marker(goal_msg.pose.pose.position.x, goal_msg.pose.pose.position.y, target_frame_);
+    // RVizにゴールマーカーを表示（姿勢も含む）
+    publish_goal_marker(goal_msg.pose.pose.position.x, goal_msg.pose.pose.position.y, goal_yaw, target_frame_);
 
     action_client_->async_send_goal(goal_msg, send_goal_options);
   }
@@ -579,7 +603,7 @@ private:
   rclcpp::TimerBase::SharedPtr publish_timer_;
 
 private:
-  void publish_goal_marker(double x, double y, const std::string& frame_id)
+  void publish_goal_marker(double x, double y, double yaw, const std::string& frame_id)
   {
     auto marker_array = visualization_msgs::msg::MarkerArray();
     
@@ -595,7 +619,14 @@ private:
     goal_marker.pose.position.x = x;
     goal_marker.pose.position.y = y;
     goal_marker.pose.position.z = 0.1;  // 少し浮かせる
-    goal_marker.pose.orientation.w = 1.0;
+    
+    // ヨー角をクォータニオンに変換してマーカーの向きを設定
+    tf2::Quaternion marker_quat;
+    marker_quat.setRPY(0.0, 0.0, yaw);
+    goal_marker.pose.orientation.x = marker_quat.x();
+    goal_marker.pose.orientation.y = marker_quat.y();
+    goal_marker.pose.orientation.z = marker_quat.z();
+    goal_marker.pose.orientation.w = marker_quat.w();
     
     goal_marker.scale.x = 0.5;  // 矢印の長さ
     goal_marker.scale.y = 0.1;  // 矢印の幅
