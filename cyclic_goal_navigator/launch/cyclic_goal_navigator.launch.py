@@ -12,7 +12,7 @@ def generate_launch_description():
     # Launch arguments
     cost_threshold_arg = DeclareLaunchArgument(
         'cost_threshold',
-        default_value='5',
+        default_value='1',
     )
 
     # Node

@@ -33,7 +33,7 @@ public:
   : Node("costmap_subscriber")
   {
     // パラメータ
-    this->declare_parameter<int>("cost_threshold", 5);
+    this->declare_parameter<int>("cost_threshold", 1);
     this->declare_parameter<std::string>("costmap_topic", "/local_costmap/costmap");
     cost_threshold_ = this->get_parameter("cost_threshold").as_int();
     costmap_topic_ = this->get_parameter("costmap_topic").as_string();
