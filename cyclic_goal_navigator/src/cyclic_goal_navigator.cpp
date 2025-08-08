@@ -7,6 +7,8 @@
 #include <limits>
 #include <cmath>
 #include <optional>
+#include <algorithm>
+#include <set>
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -58,6 +60,51 @@ public:
     return costmap_frame_id_;
   }
 
+  bool is_line_free(double x0, double y0, double x1, double y1,
+                  int occ_threshold = 50, bool block_on_unknown = true)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!last_grid_) return false;
+
+    auto & g = *last_grid_;
+    const int W = g.info.width;
+    const int H = g.info.height;
+    const double res = g.info.resolution;
+    const double ox = g.info.origin.position.x;
+    const double oy = g.info.origin.position.y;
+
+    auto world_to_map = [&](double wx, double wy, int & mx, int & my)->bool {
+      mx = static_cast<int>(std::floor((wx - ox) / res));
+      my = static_cast<int>(std::floor((wy - oy) / res));
+      return (mx >= 0 && mx < static_cast<int>(W) && my >= 0 && my < static_cast<int>(H));
+    };
+
+    int x0i, y0i, x1i, y1i;
+    if (!world_to_map(x0, y0, x0i, y0i) || !world_to_map(x1, y1, x1i, y1i)) {
+      return false; // 枠外は通せない扱い
+    }
+
+    auto idx = [&](int x, int y){ return y * static_cast<int>(W) + x; };
+
+    // Bresenham
+    int dx = std::abs(x1i - x0i), sx = x0i < x1i ? 1 : -1;
+    int dy = -std::abs(y1i - y0i), sy = y0i < y1i ? 1 : -1;
+    int err = dx + dy; // err = dx + dy (※dyは負)
+    int x = x0i, y = y0i;
+
+    while (true) {
+      const int8_t cost = g.data[idx(x, y)];
+      if ((block_on_unknown && cost < 0) || cost >= occ_threshold) {
+        return false; // 遮蔽あり
+      }
+      if (x == x1i && y == y1i) break;
+      const int e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x += sx; }
+      if (e2 <= dx) { err += dx; y += sy; }
+    }
+    return true; // 直線上に障害なし
+  }
+
 private:
   void costmap_callback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
   {
@@ -82,6 +129,7 @@ private:
         low_cost_cells_xy_.emplace_back(x, y);
       }
     }
+    last_grid_ = msg;
   }
 
   void timer_callback()
@@ -101,6 +149,7 @@ private:
   std::mutex mutex_;
   std::vector<std::pair<double, double>> low_cost_cells_xy_;
   std::string costmap_frame_id_;
+  nav_msgs::msg::OccupancyGrid::SharedPtr last_grid_;
 };
 
 class GoalNavigator : public rclcpp::Node
@@ -204,9 +253,17 @@ private:
         forward_cell->first, forward_cell->second, dist);
       
       if (dist >= 1.0) {  // 1m以上の場合、前方ゴールを採用
-        RCLCPP_INFO(this->get_logger(), "No.1: Forward goal selected (distance >= 1.0m)");
-        send_nav2_goal(*forward_cell, source_frame);
-        return;
+        // レイキャストで遮蔽チェック（前方はより厳しく50）
+        if (!costmap_subscriber_->is_line_free(robot_x, robot_y,
+                                               forward_cell->first, forward_cell->second,
+                                               /*occ_threshold=*/50,
+                                               /*block_on_unknown=*/true)) {
+          RCLCPP_INFO(this->get_logger(), "No.1: Blocked by costmap line-of-sight -> trying No.2");
+        } else {
+          RCLCPP_INFO(this->get_logger(), "No.1: Forward goal selected (LOS OK)");
+          send_nav2_goal(*forward_cell, source_frame);
+          return;
+        }
       } else {
         RCLCPP_INFO(this->get_logger(), "No.1: Forward goal too close (%.3fm < 1.0m), trying No.2", dist);
       }
@@ -214,15 +271,15 @@ private:
       RCLCPP_INFO(this->get_logger(), "No.1: No forward cell found, trying No.2");
     }
 
-    // No.2: 左右90度コーン（真横から±45度）の最遠セルを探索
-    auto side_cell = find_farthest_in_side_sectors(cells, robot_x, robot_y, robot_yaw);
+    // No.2: 左右90度コーン（真横から±45度）の最遠セルを探索（壁チェック付き）
+    auto side_cell = find_best_side_goal_with_los_check(cells, robot_x, robot_y, robot_yaw);
     
     if (side_cell.has_value()) {
       RCLCPP_INFO(this->get_logger(), "No.2: Side goal selected at (%.3f, %.3f)", 
         side_cell->first, side_cell->second);
       send_nav2_goal(*side_cell, source_frame);
     } else {
-      RCLCPP_WARN(this->get_logger(), "No suitable goal found in any direction");
+      RCLCPP_WARN(this->get_logger(), "No suitable unblocked goal found in any direction");
     }
   }
 
@@ -255,30 +312,142 @@ private:
     return best_cell;
   }
 
-  std::optional<std::pair<double, double>> find_farthest_in_side_sectors(
+  // 複数の候補を距離順で返す新しい関数
+  std::vector<std::pair<double, double>> find_candidates_in_sector(
+    const std::vector<std::pair<double, double>>& cells,
+    double robot_x, double robot_y, double center_yaw, double half_angle,
+    size_t max_candidates = 10)
+  {
+    std::vector<std::pair<double, std::pair<double, double>>> candidates_with_dist;
+    
+    for (const auto & cell : cells) {
+      double dx = cell.first - robot_x;
+      double dy = cell.second - robot_y;
+      double cell_angle = std::atan2(dy, dx);
+      double angle_diff = std::abs(normalize_angle(cell_angle - center_yaw));
+      
+      if (angle_diff <= half_angle) {
+        double dist2 = dx * dx + dy * dy;
+        // 近すぎるセルは除外（0.3m以上）
+        if (dist2 >= 0.3 * 0.3) {
+          candidates_with_dist.push_back({dist2, cell});
+        }
+      }
+    }
+    
+    // 距離の降順でソート
+    std::sort(candidates_with_dist.begin(), candidates_with_dist.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    // 上位max_candidates個を返す
+    std::vector<std::pair<double, double>> result;
+    for (size_t i = 0; i < std::min(max_candidates, candidates_with_dist.size()); ++i) {
+      result.push_back(candidates_with_dist[i].second);
+    }
+    
+    return result;
+  }
+
+  std::optional<std::pair<double, double>> find_best_side_goal_with_los_check(
     const std::vector<std::pair<double, double>>& cells,
     double robot_x, double robot_y, double robot_yaw)
   {
-    // 左側（robot_yaw + π/2）と右側（robot_yaw - π/2）の両方を探索
-    auto left_cell = find_farthest_in_sector(cells, robot_x, robot_y, robot_yaw + M_PI/2, M_PI/4);   // 左90度±45度
-    auto right_cell = find_farthest_in_sector(cells, robot_x, robot_y, robot_yaw - M_PI/2, M_PI/4);  // 右90度±45度
+    // 左右90度±45度の範囲を5度刻みで探索
+    std::vector<std::pair<double, double>> all_direction_candidates;
     
-    // 左右で最も遠いセルを選択
-    if (left_cell.has_value() && right_cell.has_value()) {
-      double left_dx = left_cell->first - robot_x;
-      double left_dy = left_cell->second - robot_y;
-      double right_dx = right_cell->first - robot_x;
-      double right_dy = right_cell->second - robot_y;
-      
-      double left_dist2 = left_dx * left_dx + left_dy * left_dy;
-      double right_dist2 = right_dx * right_dx + right_dy * right_dy;
-      
-      return (left_dist2 > right_dist2) ? left_cell : right_cell;
-    } else if (left_cell.has_value()) {
-      return left_cell;
-    } else if (right_cell.has_value()) {
-      return right_cell;
+    // 左側: 90度を中心に±45度 (45度から135度)
+    for (double angle_offset = -45.0; angle_offset <= 45.0; angle_offset += 5.0) {
+      double angle = robot_yaw + M_PI/2 + (angle_offset * M_PI / 180.0);  // 左90度 + オフセット
+      auto sector_candidates = find_candidates_in_sector(
+        cells, robot_x, robot_y, angle, M_PI/36, 3);  // 5度の扇形で各3個
+      all_direction_candidates.insert(all_direction_candidates.end(),
+                                    sector_candidates.begin(),
+                                    sector_candidates.end());
     }
+    
+    // 右側: -90度を中心に±45度 (-135度から-45度)
+    for (double angle_offset = -45.0; angle_offset <= 45.0; angle_offset += 5.0) {
+      double angle = robot_yaw - M_PI/2 + (angle_offset * M_PI / 180.0);  // 右90度 + オフセット
+      auto sector_candidates = find_candidates_in_sector(
+        cells, robot_x, robot_y, angle, M_PI/36, 3);  // 5度の扇形で各3個
+      all_direction_candidates.insert(all_direction_candidates.end(),
+                                    sector_candidates.begin(),
+                                    sector_candidates.end());
+    }
+    
+    RCLCPP_INFO(this->get_logger(), "No.2: Found %zu candidates from left/right 90±45 degrees",
+                all_direction_candidates.size());
+    
+    // 重複を除去（同じ位置の候補を削除）
+    std::set<std::pair<int, int>> seen_cells;
+    std::vector<std::pair<double, std::pair<double, double>>> all_candidates;
+    
+    for (const auto& cell : all_direction_candidates) {
+      // グリッド座標に変換して重複チェック
+      int grid_x = static_cast<int>(cell.first / 0.1);  // 10cmグリッド
+      int grid_y = static_cast<int>(cell.second / 0.1);
+      
+      if (seen_cells.find({grid_x, grid_y}) == seen_cells.end()) {
+        seen_cells.insert({grid_x, grid_y});
+        double dx = cell.first - robot_x;
+        double dy = cell.second - robot_y;
+        double dist2 = dx * dx + dy * dy;
+        all_candidates.push_back({dist2, cell});
+      }
+    }
+    
+    // 距離の降順でソート
+    std::sort(all_candidates.begin(), all_candidates.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+    
+    RCLCPP_INFO(this->get_logger(), "No.2: Testing %zu total side candidates", all_candidates.size());
+    
+    // 各候補に対して壁チェックを行い、最初にパスしたものを返す
+    int tested_count = 0;
+    for (const auto& [dist2, cell] : all_candidates) {
+      tested_count++;
+      // コスト閾値を90に引き上げ（さらに寛容）、経路の80%以上がクリアなら許可
+      bool line_free = costmap_subscriber_->is_line_free(robot_x, robot_y,
+                                           cell.first, cell.second,
+                                           /*occ_threshold=*/90,
+                                           /*block_on_unknown=*/false);  // unknownセルは通行可能とみなす
+      
+      if (line_free) {
+        RCLCPP_INFO(this->get_logger(), "Found valid side goal at (%.3f, %.3f) distance: %.3f (LOS OK, tested %d candidates)",
+                    cell.first, cell.second, std::sqrt(dist2), tested_count);
+        return cell;
+      } else {
+        // 部分的に通行可能かチェック（80%以上クリアなら許可）
+        // より単純なチェック：中間点がクリアか確認
+        double dx = cell.first - robot_x;
+        double dy = cell.second - robot_y;
+        double distance = std::sqrt(dist2);
+        
+        // 中間点での簡易チェック
+        bool mostly_clear = true;
+        for (double ratio = 0.2; ratio <= 0.8; ratio += 0.2) {
+          double check_x = robot_x + dx * ratio;
+          double check_y = robot_y + dy * ratio;
+          
+          // is_line_freeを使って部分チェック
+          if (!costmap_subscriber_->is_line_free(robot_x, robot_y, check_x, check_y, 90, false)) {
+            mostly_clear = false;
+            break;
+          }
+        }
+        
+        if (mostly_clear) {
+          RCLCPP_INFO(this->get_logger(), "Found partially clear side goal at (%.3f, %.3f) distance: %.3f (tested %d candidates)",
+                      cell.first, cell.second, distance, tested_count);
+          return cell;
+        } else {
+          RCLCPP_INFO(this->get_logger(), "Side candidate %d at (%.3f, %.3f) distance: %.3f blocked",
+                      tested_count, cell.first, cell.second, distance);
+        }
+      }
+    }
+    
+    RCLCPP_WARN(this->get_logger(), "No.2: All %d side candidates were blocked", tested_count);
     
     return std::nullopt;
   }
