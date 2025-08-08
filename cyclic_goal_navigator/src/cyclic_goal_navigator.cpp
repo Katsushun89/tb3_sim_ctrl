@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <random>
+#include <limits>
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -81,8 +82,8 @@ private:
   {
     // 1秒ごとに該当コストセルの件数をデバッグ表示
     std::lock_guard<std::mutex> lock(mutex_);
-    RCLCPP_INFO(this->get_logger(), "Cells with cost <= %d count: %zu (frame: %s)",
-      cost_threshold_, low_cost_cells_xy_.size(), costmap_frame_id_.c_str());
+    //RCLCPP_INFO(this->get_logger(), "Cells with cost <= %d count: %zu (frame: %s)",
+    //  cost_threshold_, low_cost_cells_xy_.size(), costmap_frame_id_.c_str());
   }
 
   int cost_threshold_;
@@ -147,38 +148,81 @@ private:
       return;
     }
 
-    // ランダムに1セル選択
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<size_t> dist(0, cells.size() - 1);
-    const auto & cell = cells[dist(gen)];
+    RCLCPP_INFO(this->get_logger(), "=== Coordinate System Debug ===");
+    RCLCPP_INFO(this->get_logger(), "Source frame: %s", source_frame.c_str());
+    RCLCPP_INFO(this->get_logger(), "Target frame: %s", target_frame_.c_str());
+    RCLCPP_INFO(this->get_logger(), "Available cells: %zu", cells.size());
+
+    // ロボットの現在位置（source_frame基準, 多くは local_costmap の frame と一致: 例 odom）
+    geometry_msgs::msg::TransformStamped tf_bl_src;
+    try {
+      tf_bl_src = tf_buffer_->lookupTransform(
+        source_frame, "base_link", tf2::TimePointZero, tf2::durationFromSec(0.2));
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(this->get_logger(), "TF transform failed (robot pose): %s", ex.what());
+      return;
+    }
+    const double robot_x = tf_bl_src.transform.translation.x;
+    const double robot_y = tf_bl_src.transform.translation.y;
+    RCLCPP_INFO(this->get_logger(), "Robot position in %s: (%.3f, %.3f)", source_frame.c_str(), robot_x, robot_y);
+
+    // 最遠の安全セルを選択（距離二乗で比較）
+    double max_dist2 = -std::numeric_limits<double>::infinity();
+    std::pair<double,double> best_cell {cells.front().first, cells.front().second};
+    for (const auto & cell : cells) {
+      const double dx = cell.first  - robot_x;
+      const double dy = cell.second - robot_y;
+      const double dist2 = dx*dx + dy*dy;
+      if (dist2 > max_dist2) {
+        max_dist2 = dist2;
+        best_cell = cell;
+      }
+    }
+
+    RCLCPP_INFO(this->get_logger(), "max_dist2: %f, best_cell: (%.3f, %.3f)", max_dist2, best_cell.first, best_cell.second);
+
+    // source_frame上のセル座標をPointStampedで表現
+    geometry_msgs::msg::PointStamped pt_src, pt_dst;
+    pt_src.header.frame_id = source_frame;
+    pt_src.header.stamp.sec = 0;
+    pt_src.header.stamp.nanosec = 0;  // Time=0 -> latest transform
+    pt_src.point.x = best_cell.first;
+    pt_src.point.y = best_cell.second;
+    pt_src.point.z = 0.0;
+
+    RCLCPP_INFO(this->get_logger(), "Point in %s: (%.3f, %.3f)", source_frame.c_str(), pt_src.point.x, pt_src.point.y);
 
     // source_frame -> target_frame へ座標変換
-    geometry_msgs::msg::PointStamped point_src, point_dst;
-    point_src.header.stamp.sec = 0;
-    point_src.header.stamp.nanosec = 0;  // Time=0 -> latest transform
-    point_src.header.frame_id = source_frame;
-    point_src.point.x = cell.first;
-    point_src.point.y = cell.second;
-    point_src.point.z = 0.0;
-
     try {
       if (!tf_buffer_->canTransform(target_frame_, source_frame, tf2::TimePointZero, tf2::durationFromSec(0.5))) {
         RCLCPP_WARN(this->get_logger(), "TF not available between %s and %s", source_frame.c_str(), target_frame_.c_str());
         return;
       }
-      tf_buffer_->transform(point_src, point_dst, target_frame_);
+      tf_buffer_->transform(pt_src, pt_dst, target_frame_);
     } catch (const tf2::TransformException & ex) {
       RCLCPP_WARN(this->get_logger(), "TF transform failed: %s", ex.what());
       return;
+    }
+
+    RCLCPP_INFO(this->get_logger(), "Point in %s: (%.3f, %.3f)", target_frame_.c_str(), pt_dst.point.x, pt_dst.point.y);
+
+    // ロボットのmap座標も確認
+    geometry_msgs::msg::TransformStamped tf_bl_map;
+    try {
+      tf_bl_map = tf_buffer_->lookupTransform(
+        target_frame_, "base_link", tf2::TimePointZero, tf2::durationFromSec(0.2));
+      RCLCPP_INFO(this->get_logger(), "Robot in %s: (%.3f, %.3f)", target_frame_.c_str(), 
+        tf_bl_map.transform.translation.x, tf_bl_map.transform.translation.y);
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN(this->get_logger(), "Robot TF lookup failed: %s", ex.what());
     }
 
     // NavigateToPose ゴール作成
     NavigateToPose::Goal goal_msg;
     goal_msg.pose.header.stamp = this->get_clock()->now();
     goal_msg.pose.header.frame_id = target_frame_;
-    goal_msg.pose.pose.position.x = point_dst.point.x;
-    goal_msg.pose.pose.position.y = point_dst.point.y;
+    goal_msg.pose.pose.position.x = pt_dst.point.x;
+    goal_msg.pose.pose.position.y = pt_dst.point.y;
     goal_msg.pose.pose.position.z = 0.0;
     goal_msg.pose.pose.orientation.w = 1.0;
 
@@ -222,8 +266,9 @@ private:
         }
       };
 
-    RCLCPP_INFO(this->get_logger(), "Sending NavigateToPose to (%.3f, %.3f) in %s",
+    RCLCPP_INFO(this->get_logger(), "Sending NavigateToPose to farthest safe cell (%.3f, %.3f) in %s",
       goal_msg.pose.pose.position.x, goal_msg.pose.pose.position.y, target_frame_.c_str());
+    RCLCPP_INFO(this->get_logger(), "=== End Debug ===");
 
     action_client_->async_send_goal(goal_msg, send_goal_options);
   }
