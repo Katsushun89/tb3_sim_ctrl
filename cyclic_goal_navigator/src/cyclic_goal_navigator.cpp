@@ -12,6 +12,8 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_ros/buffer.h>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <nav2_msgs/action/navigate_to_pose.hpp>
 
 using namespace std::chrono_literals;
 
@@ -97,31 +99,40 @@ private:
 class GoalNavigator : public rclcpp::Node
 {
 public:
+  using NavigateToPose = nav2_msgs::action::NavigateToPose;
+  using GoalHandleNav2 = rclcpp_action::ClientGoalHandle<NavigateToPose>;
+
   explicit GoalNavigator(const std::shared_ptr<CostmapSubscriber> & costmap_subscriber)
   : Node("goal_navigator"), costmap_subscriber_(costmap_subscriber)
   {
-    this->declare_parameter<std::string>("goal_topic", "/goal_pose");
     this->declare_parameter<std::string>("target_frame", "map");
+    this->declare_parameter<std::string>("nav2_action_name", "navigate_to_pose");
     this->declare_parameter<int>("publish_delay_ms", 1000);
 
-    goal_topic_ = this->get_parameter("goal_topic").as_string();
     target_frame_ = this->get_parameter("target_frame").as_string();
+    action_name_ = this->get_parameter("nav2_action_name").as_string();
     const int publish_delay_ms = this->get_parameter("publish_delay_ms").as_int();
-
-    goal_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(goal_topic_, 10);
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
+    action_client_ = rclcpp_action::create_client<NavigateToPose>(this, action_name_);
+
     publish_timer_ = this->create_wall_timer(
       std::chrono::milliseconds(publish_delay_ms),
-      std::bind(&GoalNavigator::maybe_publish_random_goal, this));
+      std::bind(&GoalNavigator::maybe_send_random_goal, this));
   }
 
 private:
-  void maybe_publish_random_goal()
+  void maybe_send_random_goal()
   {
-    if (has_published_goal_) {
+    if (goal_in_progress_) {
+      return;
+    }
+
+    if (!action_client_->wait_for_action_server(100ms)) {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+        "Waiting for Nav2 action server '%s'...", action_name_.c_str());
       return;
     }
 
@@ -142,7 +153,7 @@ private:
     std::uniform_int_distribution<size_t> dist(0, cells.size() - 1);
     const auto & cell = cells[dist(gen)];
 
-    // odom等の座標をmapに変換（最新のTFを使用）
+    // source_frame -> target_frame へ座標変換
     geometry_msgs::msg::PointStamped point_src, point_dst;
     point_src.header.stamp.sec = 0;
     point_src.header.stamp.nanosec = 0;  // Time=0 -> latest transform
@@ -162,22 +173,59 @@ private:
       return;
     }
 
-    geometry_msgs::msg::PoseStamped goal;
-    goal.header.stamp = this->get_clock()->now();
-    goal.header.frame_id = target_frame_;
-    goal.pose.position.x = point_dst.point.x;
-    goal.pose.position.y = point_dst.point.y;
-    goal.pose.position.z = 0.0;
-    goal.pose.orientation.x = 0.0;
-    goal.pose.orientation.y = 0.0;
-    goal.pose.orientation.z = 0.0;
-    goal.pose.orientation.w = 1.0;
+    // NavigateToPose ゴール作成
+    NavigateToPose::Goal goal_msg;
+    goal_msg.pose.header.stamp = this->get_clock()->now();
+    goal_msg.pose.header.frame_id = target_frame_;
+    goal_msg.pose.pose.position.x = point_dst.point.x;
+    goal_msg.pose.pose.position.y = point_dst.point.y;
+    goal_msg.pose.pose.position.z = 0.0;
+    goal_msg.pose.pose.orientation.w = 1.0;
 
-    goal_pub_->publish(goal);
-    has_published_goal_ = true;
-    RCLCPP_INFO(this->get_logger(),
-      "Published random goal to %s at (%.3f, %.3f) in %s frame",
-      goal_topic_.c_str(), goal.pose.position.x, goal.pose.position.y, target_frame_.c_str());
+    auto send_goal_options = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
+    send_goal_options.goal_response_callback =
+      [this](std::shared_ptr<GoalHandleNav2> handle) {
+        if (!handle) {
+          RCLCPP_ERROR(this->get_logger(), "NavigateToPose goal rejected");
+          goal_in_progress_ = false;
+        } else {
+          RCLCPP_INFO(this->get_logger(), "NavigateToPose goal accepted");
+          goal_in_progress_ = true;
+        }
+      };
+
+    send_goal_options.feedback_callback =
+      [this](
+        std::shared_ptr<GoalHandleNav2>,
+        const std::shared_ptr<const NavigateToPose::Feedback> feedback) {
+        (void)feedback; // 拡張用
+      };
+
+    send_goal_options.result_callback =
+      [this](const GoalHandleNav2::WrappedResult & result) {
+        goal_in_progress_ = false;
+        switch (result.code) {
+          case rclcpp_action::ResultCode::SUCCEEDED:
+            RCLCPP_INFO(this->get_logger(), "Goal reached. Scheduling next goal.");
+            // 次のゴールをすぐに再送
+            this->maybe_send_random_goal();
+            break;
+          case rclcpp_action::ResultCode::ABORTED:
+            RCLCPP_WARN(this->get_logger(), "Goal aborted. Will retry later.");
+            break;
+          case rclcpp_action::ResultCode::CANCELED:
+            RCLCPP_WARN(this->get_logger(), "Goal canceled.");
+            break;
+          default:
+            RCLCPP_WARN(this->get_logger(), "Unknown result code.");
+            break;
+        }
+      };
+
+    RCLCPP_INFO(this->get_logger(), "Sending NavigateToPose to (%.3f, %.3f) in %s",
+      goal_msg.pose.pose.position.x, goal_msg.pose.pose.position.y, target_frame_.c_str());
+
+    action_client_->async_send_goal(goal_msg, send_goal_options);
   }
 
   // Inputs
@@ -187,11 +235,12 @@ private:
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
-  // Publisher
-  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pub_;
-  std::string goal_topic_;
+  // Action client
+  rclcpp_action::Client<NavigateToPose>::SharedPtr action_client_;
+  std::string action_name_;
+
   std::string target_frame_;
-  bool has_published_goal_ {false};
+  bool goal_in_progress_ {false};
 
   // Timer
   rclcpp::TimerBase::SharedPtr publish_timer_;

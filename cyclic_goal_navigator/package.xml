@@ -3,12 +3,16 @@
 <package format="3">
   <name>cyclic_goal_navigator</name>
   <version>0.0.0</version>
-  <description>Cyclic goal navigator for TB3 </description>
+  <description>Cyclic goal navigator for TB3</description>
   <maintainer email="katsushun89@gmail.com">s-katsu</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- 実行時依存関係 -->
   <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>nav2_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>tf2_ros</depend>
