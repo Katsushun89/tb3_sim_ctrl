@@ -22,6 +22,7 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
+// コストマップベースの到達可能性チェックを使用（Nav2サービスは不使用）
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
@@ -110,6 +111,62 @@ public:
     }
     
     return true;  // ゴールとして妥当
+  }
+
+  bool is_goal_area_safe(double goal_x, double goal_y)
+  {
+    // ゴール周辺の安全性を詳細にチェック
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!last_grid_) return true;
+
+    auto & g = *last_grid_;
+    const double res = g.info.resolution;
+    const double ox = g.info.origin.position.x;
+    const double oy = g.info.origin.position.y;
+    const int W = g.info.width;
+    const int H = g.info.height;
+
+    // ゴール位置をマップ座標に変換
+    int mx = static_cast<int>(std::floor((goal_x - ox) / res));
+    int my = static_cast<int>(std::floor((goal_y - oy) / res));
+    
+    // 境界チェック
+    if (mx < 2 || mx >= W - 2 || my < 2 || my >= H - 2) {
+      return false;  // マップ境界に近すぎる
+    }
+    
+    // ゴール周辺（5x5）のセルをチェック
+    int high_cost_count = 0;
+    int unknown_count = 0;
+    int total_cells = 0;
+    
+    for (int dx = -2; dx <= 2; ++dx) {
+      for (int dy = -2; dy <= 2; ++dy) {
+        int check_x = mx + dx;
+        int check_y = my + dy;
+        
+        if (check_x < 0 || check_x >= W || check_y < 0 || check_y >= H) {
+          return false;  // 範囲外
+        }
+        
+        int idx = check_y * W + check_x;
+        int8_t cost = g.data[idx];
+        total_cells++;
+        
+        if (cost < 0) {  // unknown
+          unknown_count++;
+        } else if (cost >= 70) {  // 高コスト
+          high_cost_count++;
+        }
+      }
+    }
+    
+    // 判定条件
+    double high_cost_ratio = static_cast<double>(high_cost_count) / total_cells;
+    double unknown_ratio = static_cast<double>(unknown_count) / total_cells;
+    
+    // 高コストセルが40%以上、またはunknownセルが60%以上なら危険
+    return (high_cost_ratio <= 0.4 && unknown_ratio <= 0.6);
   }
 
   bool is_line_free(double x0, double y0, double x1, double y1,
@@ -243,8 +300,8 @@ public:
 private:
   void maybe_send_directional_goal()
   {
-    if (goal_in_progress_) {
-      return;
+    if (goal_in_progress_ || is_retrying_) {
+      return;  // ゴール実行中または再試行待ち中は何もしない
     }
 
     if (!action_client_->wait_for_action_server(100ms)) {
@@ -380,16 +437,23 @@ private:
     std::sort(forward_candidates.begin(), forward_candidates.end(),
               [](const auto& a, const auto& b) { return a.first > b.first; });
     
-    // 最も遠い候補から順にゴール妥当性をチェック
+    // 最も遠い候補から順にゴール妥当性と経路計画をチェック
     for (const auto& [dist2, candidate] : forward_candidates) {
-      if (costmap_subscriber_->is_goal_valid(candidate.first, candidate.second)) {
-        RCLCPP_INFO(this->get_logger(), "No.1: Valid forward candidate selected at (%.3f, %.3f)", 
-                    candidate.first, candidate.second);
-        return candidate;
-      } else {
+      if (!costmap_subscriber_->is_goal_valid(candidate.first, candidate.second)) {
         RCLCPP_INFO(this->get_logger(), "No.1: Forward candidate at (%.3f, %.3f) rejected (invalid goal area)", 
                     candidate.first, candidate.second);
+        continue;
       }
+      
+      if (!is_goal_reachable(candidate.first, candidate.second)) {
+        RCLCPP_INFO(this->get_logger(), "No.1: Forward candidate at (%.3f, %.3f) rejected (unreachable)", 
+                    candidate.first, candidate.second);
+        continue;
+      }
+      
+      RCLCPP_INFO(this->get_logger(), "No.1: Valid and reachable forward candidate selected at (%.3f, %.3f)", 
+                  candidate.first, candidate.second);
+      return candidate;
     }
     
     return std::nullopt;
@@ -524,8 +588,9 @@ private:
                                            /*occ_threshold=*/90,
                                            /*block_on_unknown=*/false);  // unknownセルは通行可能とみなす
       
-      if (line_free && costmap_subscriber_->is_goal_valid(cell.first, cell.second)) {
-        RCLCPP_INFO(this->get_logger(), "Found valid side goal at (%.3f, %.3f) distance: %.3f (LOS OK, tested %d candidates)",
+      if (line_free && costmap_subscriber_->is_goal_valid(cell.first, cell.second) &&
+          is_goal_reachable(cell.first, cell.second)) {
+        RCLCPP_INFO(this->get_logger(), "Found valid and reachable side goal at (%.3f, %.3f) distance: %.3f (LOS OK, tested %d candidates)",
                     cell.first, cell.second, std::sqrt(dist2), tested_count);
         return cell;
       } else {
@@ -550,8 +615,9 @@ private:
         }
         
         double clear_ratio = static_cast<double>(clear_segments) / total_segments;
-        if (clear_ratio >= 0.5 && costmap_subscriber_->is_goal_valid(cell.first, cell.second)) {  // 50%以上クリア + ゴール妥当性
-          RCLCPP_INFO(this->get_logger(), "Found partially clear side goal at (%.3f, %.3f) distance: %.3f (%.0f%% clear, tested %d candidates)",
+        if (clear_ratio >= 0.5 && costmap_subscriber_->is_goal_valid(cell.first, cell.second) &&
+            is_goal_reachable(cell.first, cell.second)) {  // 50%以上クリア + ゴール妥当性 + 到達可能性
+          RCLCPP_INFO(this->get_logger(), "Found partially clear and reachable side goal at (%.3f, %.3f) distance: %.3f (%.0f%% clear, tested %d candidates)",
                       cell.first, cell.second, distance, clear_ratio * 100, tested_count);
           return cell;
         } else {
@@ -676,13 +742,22 @@ private:
           case rclcpp_action::ResultCode::ABORTED:
           {
             RCLCPP_WARN(this->get_logger(), "Goal aborted. Will retry in 3 seconds.");
-            // 3秒後に再試行
-            auto retry_timer = this->create_wall_timer(
+            is_retrying_ = true;
+            
+            // 既存のretry_timerがあればキャンセル
+            if (retry_timer_) {
+              retry_timer_->cancel();
+            }
+            
+            // 3秒後に再試行（ワンショット）
+            retry_timer_ = this->create_wall_timer(
               std::chrono::seconds(3),
               [this]() {
+                is_retrying_ = false;
+                retry_timer_->cancel();  // タイマーを停止
+                retry_timer_ = nullptr;
                 this->maybe_send_directional_goal();
               });
-            // ワンショットタイマーなので、コールバック実行後に自動的に停止される
             break;
           }
           case rclcpp_action::ResultCode::CANCELED:
@@ -717,6 +792,7 @@ private:
 
   std::string target_frame_;
   bool goal_in_progress_ {false};
+  bool is_retrying_ {false};  // 再試行中フラグ
 
   // RViz表示用
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
@@ -728,8 +804,22 @@ private:
 
   // Timer
   rclcpp::TimerBase::SharedPtr publish_timer_;
+  rclcpp::TimerBase::SharedPtr retry_timer_;
 
 private:
+  bool is_goal_reachable(double goal_x, double goal_y)
+  {
+    // CostmapSubscriberの詳細チェック機能を使用
+    bool is_safe = costmap_subscriber_->is_goal_area_safe(goal_x, goal_y);
+    
+    if (!is_safe) {
+      RCLCPP_INFO(this->get_logger(), "Goal at (%.3f, %.3f) rejected - unsafe area based on costmap", 
+                  goal_x, goal_y);
+    }
+    
+    return is_safe;
+  }
+
   void path_callback(const nav_msgs::msg::Path::SharedPtr msg)
   {
     if (msg->poses.empty()) {
