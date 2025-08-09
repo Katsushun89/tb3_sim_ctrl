@@ -1,71 +1,92 @@
 # TB3_sim_ctrl
 
-TurtleBot3 simulator on ROS2 Jazzy
-
-## 概要
-
-TB3_sim_ctrlは、ROS2 Jazzy環境でTurtlebot3のシミュレーションと制御を行うためのメタパッケージです。複数の機能別ROS2パッケージを統合管理し、Turtlebot3の開発環境を提供します。
+TurtleBot3のシミュレーション制御用ROS2パッケージ群
 
 ## パッケージ構成
 
-### [TB3_sim_env](./TB3_sim_env/README.md)
+### 1. cyclic_goal_navigator
+自律探索ノード。ローカルコストマップに基づいて連続的にゴールを設定し、無限探索を実行。
 
-Turtlebot3シミュレーション環境のセットアップと管理を行うパッケージです。
+**主な機能:**
+- 2段階ゴール選択（前方優先→左右探索）
+- 障害物回避とレイキャスティング
+- 走行経路のRViz永続表示
+- 緊急脱出モード
 
-**主な機能：**
-- Gazebo環境の自動セットアップ
-- Turtlebot3関連パッケージの一括インストール
-- シミュレーション起動スクリプトの提供
-- ROS2 Jazzyおよび新しいGazebo（旧Ignition）対応
-
-**クイックスタート：**
+**起動:**
 ```bash
-# セットアップ
-cd ~/ros2_ws/src/TB3_sim_ctrl/TB3_sim_env/script/
-./setup_turtlebot3_simulation.sh
-
-# シミュレーション起動
-./launch_tb3_sim.sh world
+ros2 launch cyclic_goal_navigator cyclic_goal_navigator.launch.py
 ```
 
-詳細は[TB3_sim_env/README.md](./TB3_sim_env/README.md)を参照してください。
+### 2. tb3_ctrl_bringup
+Nav2とTurtleBot3シミュレーション環境の統合起動パッケージ。
 
-## 動作環境
+**主な機能:**
+- Nav2の簡易起動
+- カスタムRViz設定の適用
+- 初期位置の自動設定（5秒後）
+- シミュレーション環境の一括起動
 
+**起動:**
+```bash
+ros2 launch tb3_ctrl_bringup tb3_nav2_simple.launch.py
+```
+
+**ファイル構成:**
+- `launch/tb3_nav2_simple.launch.py`: Nav2統合起動
+- `config/nav2_view.rviz`: カスタムRViz設定
+- `scripts/set_initial_pose.py`: 初期位置自動設定スクリプト
+
+## 環境構築
+
+### 必要な依存関係
 - ROS2 Jazzy
-- Ubuntu 24.04 (Noble)
-- Docker環境推奨
+- Nav2
+- TurtleBot3パッケージ
+- Gazeboシミュレータ
 
-## インストール
-
+### ビルド方法
 ```bash
-# ワークスペースに移動
-cd ~/ros2_ws/src/
-
-# リポジトリのクローン
-git clone https://github.com/Katsushun89/TB3_sim_ctrl.git
-
-# TB3_sim_envのセットアップを実行
-cd TB3_sim_ctrl/TB3_sim_env/script/
-./setup_turtlebot3_simulation.sh
+cd ~/ros2_ws
+colcon build --packages-select cyclic_goal_navigator tb3_ctrl_bringup
+source install/setup.bash
 ```
 
-## 今後の追加予定パッケージ
+## 使用例
 
-- **TB3_nav**: 自律ナビゲーション機能
-- **TB3_slam**: SLAM（地図作成と自己位置推定）
-- **TB3_control**: カスタム制御アルゴリズム
-- **TB3_vision**: 画像処理・認識機能
+### 完全自動探索の実行
+```bash
+# Terminal 1: Nav2とシミュレーション起動（初期位置自動設定付き）
+ros2 launch tb3_ctrl_bringup tb3_nav2_simple.launch.py
+
+# Terminal 2: 自律探索開始（少し待ってから）
+ros2 launch cyclic_goal_navigator cyclic_goal_navigator.launch.py
+```
+
+### パラメータ調整例
+```bash
+# コストマップ閾値を変更して探索
+ros2 launch cyclic_goal_navigator cyclic_goal_navigator.launch.py cost_threshold:=3
+```
+
+## トラブルシューティング
+
+### 初期位置が設定されない場合
+- Nav2が完全に起動するまで待つ（5秒以上）
+- 手動で設定: RVizの"2D Pose Estimate"を使用
+
+### ゴールが設定されない場合
+- コストマップが正しく配信されているか確認
+```bash
+ros2 topic echo /local_costmap/costmap --once
+```
+
+### 経路が表示されない場合
+- RVizで`/goal_markers`トピックが表示設定になっているか確認
+- MarkerArrayの表示を有効化
 
 ## ライセンス
+Apache 2.0
 
-Apache License 2.0
-
-## 貢献
-
-Issue報告やPull Requestを歓迎します。
-
-## 関連リンク
-
-- [Turtlebot3公式](https://www.turtlebot.com/)
-- [ROS2 Jazzy](https://docs.ros.org/en/jazzy/)
+## 作者
+s-katsu (katsushun89@gmail.com)
