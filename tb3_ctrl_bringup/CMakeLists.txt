@@ -20,6 +20,12 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}/config
 )
 
+# Install scripts
+install(PROGRAMS
+  scripts/set_initial_pose.py
+  DESTINATION share/${PROJECT_NAME}/scripts
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
