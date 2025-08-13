@@ -73,3 +73,9 @@ ros2 launch cyclic_goal_navigator cyclic_goal_navigator.launch.py
 下図は約15回ゴール設定したあとの様子
 
 <img width="703" height="618" alt="image" src="https://github.com/user-attachments/assets/844185a9-01e4-4672-bab2-5270c7aef344" />
+
+## 補足
+実装は基本的にAI 系のツールを使用しています
+- Claude code
+- Cursor
+各機能ごとに実装内容を指示して、問題あれば修正という流れを繰り返しています
