@@ -13,6 +13,8 @@ TurtleBot3のシミュレーション制御用ROS2パッケージ群
 - 走行経路のRViz永続表示
 - 緊急脱出モード
 
+**詳細なアルゴリズム説明:** [cyclic_goal_navigator/README.md](cyclic_goal_navigator/README.md)
+
 **起動:**
 ```bash
 ros2 launch cyclic_goal_navigator cyclic_goal_navigator.launch.py
@@ -47,7 +49,7 @@ ros2 launch tb3_ctrl_bringup tb3_nav2_simple.launch.py
 
 ### 必要なパッケージのインストール
 
-詳細なセットアップ手順については、[tb3_sim_env/readmeの1. セットアップスクリプトの実行](../tb3_sim_env/readme#1-セットアップスクリプトの実行)を参照してください。
+
 
 ### ビルド方法
 ```bash
