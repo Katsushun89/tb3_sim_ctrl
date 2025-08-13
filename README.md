@@ -67,3 +67,9 @@ ros2 launch tb3_ctrl_bringup tb3_nav2_simple.launch.py
 # Terminal 2: 自律探索開始
 ros2 launch cyclic_goal_navigator cyclic_goal_navigator.launch.py
 ```
+
+ゴール座標と経路をrviz上に描画
+
+下図は約15回ゴール設定したあとの様子
+
+<img width="703" height="618" alt="image" src="https://github.com/user-attachments/assets/844185a9-01e4-4672-bab2-5270c7aef344" />
