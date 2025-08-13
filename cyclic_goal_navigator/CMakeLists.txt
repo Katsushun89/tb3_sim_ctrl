@@ -16,9 +16,20 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
+# インクルードディレクトリの設定
+include_directories(
+  include
+)
+
 # 実行可能ファイルの作成
 add_executable(cyclic_goal_navigator_node
   src/cyclic_goal_navigator.cpp
+)
+
+# インクルードパスの設定
+target_include_directories(cyclic_goal_navigator_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
 )
 
 # 依存関係の設定
@@ -42,6 +53,12 @@ install(TARGETS
 install(DIRECTORY
   launch
   DESTINATION share/${PROJECT_NAME}
+)
+
+# ヘッダーファイルのインストール
+install(DIRECTORY
+  include/
+  DESTINATION include
 )
 
 if(BUILD_TESTING)
