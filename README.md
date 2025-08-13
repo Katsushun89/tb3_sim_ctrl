@@ -45,6 +45,10 @@ ros2 launch tb3_ctrl_bringup tb3_nav2_simple.launch.py
 - TurtleBot3パッケージ
 - Gazeboシミュレータ
 
+### 必要なパッケージのインストール
+
+詳細なセットアップ手順については、[tb3_sim_env/readmeの1. セットアップスクリプトの実行](../tb3_sim_env/readme#1-セットアップスクリプトの実行)を参照してください。
+
 ### ビルド方法
 ```bash
 cd ~/ros2_ws
@@ -59,34 +63,6 @@ source install/setup.bash
 # Terminal 1: Nav2とシミュレーション起動（初期位置自動設定付き）
 ros2 launch tb3_ctrl_bringup tb3_nav2_simple.launch.py
 
-# Terminal 2: 自律探索開始（少し待ってから）
+# Terminal 2: 自律探索開始
 ros2 launch cyclic_goal_navigator cyclic_goal_navigator.launch.py
 ```
-
-### パラメータ調整例
-```bash
-# コストマップ閾値を変更して探索
-ros2 launch cyclic_goal_navigator cyclic_goal_navigator.launch.py cost_threshold:=3
-```
-
-## トラブルシューティング
-
-### 初期位置が設定されない場合
-- Nav2が完全に起動するまで待つ（5秒以上）
-- 手動で設定: RVizの"2D Pose Estimate"を使用
-
-### ゴールが設定されない場合
-- コストマップが正しく配信されているか確認
-```bash
-ros2 topic echo /local_costmap/costmap --once
-```
-
-### 経路が表示されない場合
-- RVizで`/goal_markers`トピックが表示設定になっているか確認
-- MarkerArrayの表示を有効化
-
-## ライセンス
-Apache 2.0
-
-## 作者
-s-katsu (katsushun89@gmail.com)

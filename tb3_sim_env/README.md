@@ -127,4 +127,3 @@ sudo apt install --reinstall ros-jazzy-ros-gz-sim
 ## 関連リンク
 
 - [Turtlebot3公式ドキュメント](https://emanual.robotis.com/docs/en/platform/turtlebot3/simulation/)
-- [ROS2 Jazzy Gazebo統合](https://gazebosim.org/docs/latest/ros_integration)
