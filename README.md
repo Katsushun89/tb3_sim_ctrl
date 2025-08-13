@@ -48,8 +48,7 @@ ros2 launch tb3_ctrl_bringup tb3_nav2_simple.launch.py
 - Gazeboシミュレータ
 
 ### 必要なパッケージのインストール
-
-
+[tb3_sim_env/README.md](tb3_sim_env/README.md)
 
 ### ビルド方法
 ```bash
