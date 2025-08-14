@@ -72,14 +72,16 @@ jobs:
       run: |
         source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
         
-        # Create workspace
-        mkdir -p /github/workspace/ros2_ws/src
+        # Create workspace in a clean location
+        mkdir -p /tmp/ros2_ws/src
         
-        # Copy all packages to workspace
-        cp -r /github/workspace/* /github/workspace/ros2_ws/src/
+        # Copy source code to workspace (excluding hidden directories)
+        cp -r /github/workspace/cyclic_goal_navigator /tmp/ros2_ws/src/
+        cp -r /github/workspace/tb3_ctrl_bringup /tmp/ros2_ws/src/
+        cp -r /github/workspace/tb3_sim_env /tmp/ros2_ws/src/
         
         # Move to workspace root
-        cd /github/workspace/ros2_ws
+        cd /tmp/ros2_ws
         
         # Show workspace structure
         echo "Workspace structure:"
@@ -89,7 +91,7 @@ jobs:
       shell: bash
       run: |
         source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
-        cd /github/workspace/ros2_ws
+        cd /tmp/ros2_ws
         
         # Install package dependencies using rosdep
         rosdep install --from-paths src --ignore-src -r -y --rosdistro ${{ matrix.ros_distribution }}
@@ -98,7 +100,7 @@ jobs:
       shell: bash
       run: |
         source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
-        cd /github/workspace/ros2_ws
+        cd /tmp/ros2_ws
         
         # Build all packages
         colcon build \
@@ -113,7 +115,7 @@ jobs:
       shell: bash
       run: |
         source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
-        cd /github/workspace/ros2_ws
+        cd /tmp/ros2_ws
         source install/setup.bash
         
         # Run all tests
@@ -126,7 +128,7 @@ jobs:
       if: always()
       run: |
         source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
-        cd /github/workspace/ros2_ws
+        cd /tmp/ros2_ws
         
         # Show test results
         colcon test-result --verbose
@@ -142,7 +144,7 @@ jobs:
       if: always()
       with:
         name: test-results-${{ matrix.ros_distribution }}
-        path: /github/workspace/ros2_ws/build/*/test_results/**/*.xml
+        path: /tmp/ros2_ws/build/*/test_results/**/*.xml
         retention-days: 30
         
     - name: Lint check results
@@ -150,16 +152,20 @@ jobs:
       if: always()
       run: |
         source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
-        cd /github/workspace/ros2_ws
+        cd /tmp/ros2_ws
         
         # Show lint results if any
         echo "=== Lint Check Summary ==="
-        find build -name "*lint*" -name "*.xml" | head -10 | while read file; do
-          echo "=== $file ==="
-          if command -v xmllint >/dev/null 2>&1; then
-            xmllint --format "$file" 2>/dev/null || cat "$file"
-          else
-            cat "$file"
-          fi
-          echo ""
-        done
+        if [ -d "build" ]; then
+          find build -name "*lint*" -name "*.xml" | head -10 | while read file; do
+            echo "=== $file ==="
+            if command -v xmllint >/dev/null 2>&1; then
+              xmllint --format "$file" 2>/dev/null || cat "$file"
+            else
+              cat "$file"
+            fi
+            echo ""
+          done
+        else
+          echo "No build directory found"
+        fi
