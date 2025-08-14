@@ -19,6 +19,11 @@
 #include <fstream>
 #include <cmath>
 
+// AWS IoT Shadow Client
+#ifndef USE_FILE_OUTPUT
+#include "aws_iot_shadow_client.hpp"
+#endif
+
 class AwsIotPublisher : public rclcpp::Node
 {
 public:
@@ -34,6 +39,9 @@ public:
     this->declare_parameter("aws_iot_endpoint", "");
     this->declare_parameter("thing_name", "turtlebot3");
     this->declare_parameter("output_file", "/tmp/aws_iot_data.json");
+    this->declare_parameter("cert_path", std::string(getenv("HOME")) + "/.aws/tb3_aws_iot/certs/bf4e3ef806d187dfe9cc94a68290ae74a50d2083bd64665e5713bd844b9a03e3-certificate.pem.crt");
+    this->declare_parameter("private_key_path", std::string(getenv("HOME")) + "/.aws/tb3_aws_iot/certs/bf4e3ef806d187dfe9cc94a68290ae74a50d2083bd64665e5713bd844b9a03e3-private.pem.key");
+    this->declare_parameter("ca_cert_path", std::string(getenv("HOME")) + "/.aws/tb3_aws_iot/certs/AmazonRootCA1.pem");
     
     base_frame_ = this->get_parameter("base_frame").as_string();
     map_frame_ = this->get_parameter("map_frame").as_string();
@@ -41,6 +49,9 @@ public:
     aws_iot_endpoint_ = this->get_parameter("aws_iot_endpoint").as_string();
     thing_name_ = this->get_parameter("thing_name").as_string();
     output_file_ = this->get_parameter("output_file").as_string();
+    cert_path_ = this->get_parameter("cert_path").as_string();
+    private_key_path_ = this->get_parameter("private_key_path").as_string();
+    ca_cert_path_ = this->get_parameter("ca_cert_path").as_string();
 
     // Subscribers
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
@@ -50,6 +61,32 @@ public:
     goal_markers_sub_ = this->create_subscription<visualization_msgs::msg::MarkerArray>(
       "/goal_markers", 10,
       std::bind(&AwsIotPublisher::goal_markers_callback, this, std::placeholders::_1));
+
+    // Initialize AWS IoT Shadow client
+#ifndef USE_FILE_OUTPUT
+    if (!aws_iot_endpoint_.empty()) {
+      try {
+        shadow_client_ = std::make_unique<AwsIotShadowClient>(
+          aws_iot_endpoint_, thing_name_, cert_path_, private_key_path_, ca_cert_path_);
+        
+        if (shadow_client_->connect()) {
+          RCLCPP_INFO(this->get_logger(), "Connected to AWS IoT: %s", aws_iot_endpoint_.c_str());
+          use_aws_iot_ = true;
+        } else {
+          RCLCPP_WARN(this->get_logger(), "Failed to connect to AWS IoT, falling back to file output");
+          use_aws_iot_ = false;
+        }
+      } catch (const std::exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "AWS IoT initialization failed: %s", e.what());
+        use_aws_iot_ = false;
+      }
+    } else {
+      RCLCPP_INFO(this->get_logger(), "AWS IoT endpoint not configured, using file output");
+      use_aws_iot_ = false;
+    }
+#else
+    use_aws_iot_ = false;
+#endif
 
     // Timer for periodic publishing
     auto timer_period = std::chrono::milliseconds(static_cast<int>(1000.0 / publish_rate));
@@ -123,8 +160,12 @@ private:
 
     std::string json_str = create_json_payload();
 
-    // For demonstration, write to file (in real implementation, send to AWS IoT)
-    write_to_file(json_str);
+    // Send to AWS IoT Shadow or write to file
+    if (use_aws_iot_) {
+      send_to_aws_iot_shadow(json_str);
+    } else {
+      write_to_file(json_str);
+    }
     
     // Log periodically
     static int log_counter = 0;
@@ -264,6 +305,47 @@ private:
   }
 #endif
 
+  void send_to_aws_iot_shadow(const std::string& json_str)
+  {
+#ifndef USE_FILE_OUTPUT
+    if (shadow_client_ && shadow_client_->is_connected()) {
+      // Create Device Shadow update format
+      std::string shadow_update = create_shadow_update(json_str);
+      
+      if (shadow_client_->update_shadow(shadow_update)) {
+        static int success_counter = 0;
+        if (++success_counter % 30 == 0) {
+          RCLCPP_INFO(this->get_logger(), "AWS IoT Shadow updated successfully (%d times)", success_counter);
+        }
+      } else {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 10000,
+          "Failed to update AWS IoT Shadow");
+      }
+    } else {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 30000,
+        "AWS IoT Shadow client not connected");
+    }
+#endif
+  }
+
+  std::string create_shadow_update(const std::string& state_json)
+  {
+#ifdef USE_SIMPLE_JSON
+    std::ostringstream shadow;
+    shadow << "{\n";
+    shadow << "  \"state\": {\n";
+    shadow << "    \"reported\": " << state_json << "\n";
+    shadow << "  }\n";
+    shadow << "}";
+    return shadow.str();
+#else
+    nlohmann::json shadow_doc;
+    nlohmann::json state = nlohmann::json::parse(state_json);
+    shadow_doc["state"]["reported"] = state;
+    return shadow_doc.dump();
+#endif
+  }
+
   void write_to_file(const std::string& json_str)
   {
     try {
@@ -295,6 +377,15 @@ private:
   std::string aws_iot_endpoint_;
   std::string thing_name_;
   std::string output_file_;
+  std::string cert_path_;
+  std::string private_key_path_;
+  std::string ca_cert_path_;
+
+  // AWS IoT Shadow client
+#ifndef USE_FILE_OUTPUT
+  std::unique_ptr<AwsIotShadowClient> shadow_client_;
+#endif
+  bool use_aws_iot_ = false;
 
   // State
   geometry_msgs::msg::Pose robot_pose_in_map_;

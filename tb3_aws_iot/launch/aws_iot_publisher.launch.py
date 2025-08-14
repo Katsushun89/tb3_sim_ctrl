@@ -39,6 +39,21 @@ def generate_launch_description():
             default_value='/tmp/aws_iot_data.json',
             description='Output file path for JSON data'
         ),
+        DeclareLaunchArgument(
+            'cert_path',
+            default_value='/home/s-katsu/.aws/tb3_aws_iot/certs/bf4e3ef806d187dfe9cc94a68290ae74a50d2083bd64665e5713bd844b9a03e3-certificate.pem.crt',
+            description='Path to device certificate'
+        ),
+        DeclareLaunchArgument(
+            'private_key_path',
+            default_value='/home/s-katsu/.aws/tb3_aws_iot/certs/bf4e3ef806d187dfe9cc94a68290ae74a50d2083bd64665e5713bd844b9a03e3-private.pem.key',
+            description='Path to private key'
+        ),
+        DeclareLaunchArgument(
+            'ca_cert_path',
+            default_value='/home/s-katsu/.aws/tb3_aws_iot/certs/AmazonRootCA1.pem',
+            description='Path to CA certificate'
+        ),
 
         # AWS IoT Publisher Node
         Node(
@@ -53,6 +68,9 @@ def generate_launch_description():
                 'aws_iot_endpoint': LaunchConfiguration('aws_iot_endpoint'),
                 'thing_name': LaunchConfiguration('thing_name'),
                 'output_file': LaunchConfiguration('output_file'),
+                'cert_path': LaunchConfiguration('cert_path'),
+                'private_key_path': LaunchConfiguration('private_key_path'),
+                'ca_cert_path': LaunchConfiguration('ca_cert_path'),
             }],
             remappings=[
                 ('/odom', '/odom'),

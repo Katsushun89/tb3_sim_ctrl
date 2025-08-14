@@ -15,6 +15,14 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
+# MQTT Client Library
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(PAHO_MQTT_C QUIET libpaho-mqtt3as)
+pkg_check_modules(PAHO_MQTT_CPP QUIET PahoMqttCpp)
+
+# OpenSSL for TLS
+find_package(OpenSSL REQUIRED)
+
 # Try to find nlohmann_json, fallback to header-only if not found
 find_package(nlohmann_json QUIET)
 if(NOT nlohmann_json_FOUND)
@@ -25,7 +33,10 @@ if(NOT nlohmann_json_FOUND)
 endif()
 
 # Add executable
-add_executable(aws_iot_publisher_node src/aws_iot_publisher.cpp)
+add_executable(aws_iot_publisher_node 
+  src/aws_iot_publisher.cpp
+  src/aws_iot_shadow_client.cpp
+)
 ament_target_dependencies(aws_iot_publisher_node
   rclcpp
   geometry_msgs
@@ -47,6 +58,13 @@ else()
   # Use header-only version - create simple JSON manually
   target_compile_definitions(aws_iot_publisher_node PRIVATE USE_SIMPLE_JSON)
 endif()
+
+# Link OpenSSL and include AWS IoT Shadow client
+target_link_libraries(aws_iot_publisher_node OpenSSL::SSL OpenSSL::Crypto)
+target_include_directories(aws_iot_publisher_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# We have our own MQTT implementation in aws_iot_shadow_client.cpp
+# No need for external MQTT libraries
 
 # Install targets
 install(TARGETS

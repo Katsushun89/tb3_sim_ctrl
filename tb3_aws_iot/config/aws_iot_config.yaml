@@ -16,4 +16,9 @@ aws_iot_publisher:
     # Output settings
     output_file: "/tmp/aws_iot_data.json"
     
+    # Certificate paths
+    cert_path: "/home/s-katsu/.aws/tb3_aws_iot/certs/bf4e3ef806d187dfe9cc94a68290ae74a50d2083bd64665e5713bd844b9a03e3-certificate.pem.crt"
+    private_key_path: "/home/s-katsu/.aws/tb3_aws_iot/certs/bf4e3ef806d187dfe9cc94a68290ae74a50d2083bd64665e5713bd844b9a03e3-private.pem.key" 
+    ca_cert_path: "/home/s-katsu/.aws/tb3_aws_iot/certs/AmazonRootCA1.pem"
+    
     # Topic remappings are handled in launch file
