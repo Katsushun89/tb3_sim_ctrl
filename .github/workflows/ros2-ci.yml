@@ -1,0 +1,165 @@
+name: ROS2 CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        ros_distribution:
+          - jazzy
+      fail-fast: false
+    
+    container:
+      image: ros:${{ matrix.ros_distribution }}-ros-base
+      
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup ROS environment
+      shell: bash
+      run: |
+        # Update package list
+        apt-get update
+        
+        # Install additional ROS2 packages needed for testing
+        apt-get install -y \
+          python3-colcon-common-extensions \
+          python3-colcon-mixin \
+          python3-rosdep \
+          python3-vcstool \
+          build-essential \
+          curl \
+          git \
+          libbluetooth-dev \
+          libusb-dev \
+          python3-pip \
+          wget \
+          libasio-dev \
+          libtinyxml2-dev \
+          libcunit1-dev
+          
+        # Install ROS2 navigation and testing packages
+        apt-get install -y \
+          ros-${{ matrix.ros_distribution }}-navigation2 \
+          ros-${{ matrix.ros_distribution }}-nav2-bringup \
+          ros-${{ matrix.ros_distribution }}-turtlebot3-msgs \
+          ros-${{ matrix.ros_distribution }}-tf2 \
+          ros-${{ matrix.ros_distribution }}-tf2-ros \
+          ros-${{ matrix.ros_distribution }}-tf2-geometry-msgs \
+          ros-${{ matrix.ros_distribution }}-ament-cmake-gtest \
+          ros-${{ matrix.ros_distribution }}-ament-lint-auto \
+          ros-${{ matrix.ros_distribution }}-ament-lint-common
+          
+        # Initialize rosdep
+        rosdep init || true
+        rosdep update --rosdistro ${{ matrix.ros_distribution }}
+        
+    - name: Source ROS2 environment
+      shell: bash
+      run: |
+        echo "source /opt/ros/${{ matrix.ros_distribution }}/setup.bash" >> ~/.bashrc
+        source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
+        
+    - name: Create workspace and copy packages
+      shell: bash
+      run: |
+        source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
+        
+        # Create workspace
+        mkdir -p /github/workspace/ros2_ws/src
+        
+        # Copy all packages to workspace
+        cp -r /github/workspace/* /github/workspace/ros2_ws/src/
+        
+        # Move to workspace root
+        cd /github/workspace/ros2_ws
+        
+        # Show workspace structure
+        echo "Workspace structure:"
+        find src -name "package.xml" -exec dirname {} \;
+        
+    - name: Install dependencies
+      shell: bash
+      run: |
+        source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
+        cd /github/workspace/ros2_ws
+        
+        # Install package dependencies using rosdep
+        rosdep install --from-paths src --ignore-src -r -y --rosdistro ${{ matrix.ros_distribution }}
+        
+    - name: Build packages
+      shell: bash
+      run: |
+        source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
+        cd /github/workspace/ros2_ws
+        
+        # Build all packages
+        colcon build \
+          --symlink-install \
+          --cmake-args -DCMAKE_BUILD_TYPE=Release \
+          --event-handlers console_direct+
+          
+        # Source the built workspace
+        source install/setup.bash
+        
+    - name: Run tests
+      shell: bash
+      run: |
+        source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
+        cd /github/workspace/ros2_ws
+        source install/setup.bash
+        
+        # Run all tests
+        colcon test \
+          --event-handlers console_direct+ \
+          --return-code-on-test-failure
+          
+    - name: Get test results
+      shell: bash
+      if: always()
+      run: |
+        source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
+        cd /github/workspace/ros2_ws
+        
+        # Show test results
+        colcon test-result --verbose
+        
+        # Show detailed test results for cyclic_goal_navigator
+        if [ -d "build/cyclic_goal_navigator/test_results" ]; then
+          echo "=== Cyclic Goal Navigator Test Results ==="
+          find build/cyclic_goal_navigator/test_results -name "*.xml" -exec echo "File: {}" \; -exec cat {} \;
+        fi
+        
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: test-results-${{ matrix.ros_distribution }}
+        path: /github/workspace/ros2_ws/build/*/test_results/**/*.xml
+        retention-days: 30
+        
+    - name: Lint check results
+      shell: bash
+      if: always()
+      run: |
+        source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
+        cd /github/workspace/ros2_ws
+        
+        # Show lint results if any
+        echo "=== Lint Check Summary ==="
+        find build -name "*lint*" -name "*.xml" | head -10 | while read file; do
+          echo "=== $file ==="
+          if command -v xmllint >/dev/null 2>&1; then
+            xmllint --format "$file" 2>/dev/null || cat "$file"
+          else
+            cat "$file"
+          fi
+          echo ""
+        done
