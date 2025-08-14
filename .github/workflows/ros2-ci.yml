@@ -72,13 +72,24 @@ jobs:
       run: |
         source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
         
+        # Debug: Show what's in the workspace
+        echo "Current directory: $(pwd)"
+        echo "Files in workspace:"
+        ls -la
+        
         # Create workspace in a clean location
         mkdir -p /tmp/ros2_ws/src
         
-        # Copy source code to workspace (excluding hidden directories)
-        cp -r /github/workspace/cyclic_goal_navigator /tmp/ros2_ws/src/
-        cp -r /github/workspace/tb3_ctrl_bringup /tmp/ros2_ws/src/
-        cp -r /github/workspace/tb3_sim_env /tmp/ros2_ws/src/
+        # Copy source code to workspace
+        if [ -d "cyclic_goal_navigator" ]; then
+          cp -r cyclic_goal_navigator /tmp/ros2_ws/src/
+        fi
+        if [ -d "tb3_ctrl_bringup" ]; then
+          cp -r tb3_ctrl_bringup /tmp/ros2_ws/src/
+        fi
+        if [ -d "tb3_sim_env" ]; then
+          cp -r tb3_sim_env /tmp/ros2_ws/src/
+        fi
         
         # Move to workspace root
         cd /tmp/ros2_ws
@@ -130,13 +141,24 @@ jobs:
         source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
         cd /tmp/ros2_ws
         
-        # Show test results
-        colcon test-result --verbose
-        
-        # Show detailed test results for cyclic_goal_navigator
-        if [ -d "build/cyclic_goal_navigator/test_results" ]; then
-          echo "=== Cyclic Goal Navigator Test Results ==="
-          find build/cyclic_goal_navigator/test_results -name "*.xml" -exec echo "File: {}" \; -exec cat {} \;
+        # Check if build directory exists
+        if [ -d "build" ]; then
+          echo "Build directory found. Showing test results..."
+          
+          # Show test results
+          colcon test-result --verbose || echo "colcon test-result failed"
+          
+          # Show detailed test results for cyclic_goal_navigator
+          if [ -d "build/cyclic_goal_navigator/test_results" ]; then
+            echo "=== Cyclic Goal Navigator Test Results ==="
+            find build/cyclic_goal_navigator/test_results -name "*.xml" -exec echo "File: {}" \; -exec cat {} \;
+          else
+            echo "No test results found for cyclic_goal_navigator"
+          fi
+        else
+          echo "No build directory found - build may have failed"
+          echo "Available directories:"
+          ls -la
         fi
         
     - name: Upload test results
