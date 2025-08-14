@@ -39,6 +39,30 @@ ros2 launch tb3_ctrl_bringup tb3_nav2_simple.launch.py
 - `config/nav2_view.rviz`: カスタムRViz設定
 - `scripts/set_initial_pose.py`: 初期位置自動設定スクリプト
 
+### 3. tb3_aws_iot
+AWS IoT連携ノード。TurtleBot3の位置姿勢とゴール座標をAWS IoT Device Shadowに送信。
+
+**主な機能:**
+- ロボットの位置姿勢をmap座標系で取得・変換
+- ゴールマーカーからゴール座標を抽出
+- AWS IoT Device Shadowへのリアルタイムデータ送信
+- ゴールまでの距離計算
+- 速度情報（線形・角速度）の取得
+
+**起動:**
+```bash
+ros2 launch tb3_aws_iot aws_iot_publisher.launch.py aws_iot_endpoint:=YOUR-ENDPOINT.iot.REGION.amazonaws.com
+```
+
+**データフォーマット:**
+- robot_pose: map座標系での位置姿勢
+- goal_pose: ゴール位置姿勢
+- distance_to_goal: ゴールまでの距離
+- odometry: 線形・角速度情報
+
+**AWS証明書設定:**
+`~/.aws/tb3_aws_iot/certs/`に配置
+
 ## 環境構築
 
 ### 必要な依存関係
