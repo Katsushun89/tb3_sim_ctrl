@@ -63,9 +63,44 @@ install(DIRECTORY
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  find_package(ament_cmake_gtest REQUIRED)
+
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # CostmapSubscriber テスト
+  ament_add_gtest(costmap_subscriber_test
+    test/costmap_subscriber_test.cpp
+  )
+  target_include_directories(costmap_subscriber_test PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+  ament_target_dependencies(costmap_subscriber_test
+    rclcpp
+    nav_msgs
+    geometry_msgs
+  )
+
+  # GoalNavigator テスト
+  ament_add_gtest(goal_navigator_test
+    test/goal_navigator_test.cpp
+  )
+  target_include_directories(goal_navigator_test PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+  ament_target_dependencies(goal_navigator_test
+    rclcpp
+    rclcpp_action
+    nav_msgs
+    geometry_msgs
+    tf2_ros
+    tf2_geometry_msgs
+    nav2_msgs
+    visualization_msgs
+  )
 endif()
 
 ament_package()
