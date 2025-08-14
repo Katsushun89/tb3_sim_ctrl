@@ -12,8 +12,6 @@ find_package(ament_cmake REQUIRED)
 install(PROGRAMS
   script/setup_turtlebot3_simulation.sh
   script/launch_tb3_sim.sh
-  script/launch_tb3_rviz.sh
-  script/fix_gazebo_rviz_conflict.sh
   script/reset_gazebo_processes.sh
   DESTINATION lib/${PROJECT_NAME}
 )
