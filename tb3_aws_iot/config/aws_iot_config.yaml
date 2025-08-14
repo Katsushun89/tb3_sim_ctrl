@@ -1,0 +1,19 @@
+# AWS IoT Publisher Configuration
+
+aws_iot_publisher:
+  ros__parameters:
+    # Robot frames
+    base_frame: "base_footprint"
+    map_frame: "map"
+    
+    # Publishing rate (Hz)
+    publish_rate: 1.0
+    
+    # AWS IoT settings
+    aws_iot_endpoint: ""  # Set your AWS IoT endpoint here
+    thing_name: "turtlebot3"
+    
+    # Output settings
+    output_file: "/tmp/aws_iot_data.json"
+    
+    # Topic remappings are handled in launch file
