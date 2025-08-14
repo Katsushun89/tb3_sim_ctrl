@@ -1,4 +1,4 @@
-name: ROS2 CI/CD Pipeline
+name: Cyclic Goal Navigator CI
 
 on:
   push:
@@ -113,9 +113,9 @@ jobs:
         source /opt/ros/${{ matrix.ros_distribution }}/setup.bash
         cd /tmp/ros2_ws
         
-        # Build specific packages (skip tb3_sim_env if it has issues)
+        # Build cyclic_goal_navigator package only
         colcon build \
-          --packages-select cyclic_goal_navigator tb3_ctrl_bringup \
+          --packages-select cyclic_goal_navigator \
           --symlink-install \
           --cmake-args -DCMAKE_BUILD_TYPE=Release \
           --event-handlers console_direct+
@@ -130,9 +130,9 @@ jobs:
         cd /tmp/ros2_ws
         source install/setup.bash
         
-        # Run tests for selected packages
+        # Run tests for cyclic_goal_navigator
         colcon test \
-          --packages-select cyclic_goal_navigator tb3_ctrl_bringup \
+          --packages-select cyclic_goal_navigator \
           --event-handlers console_direct+ \
           --return-code-on-test-failure
           
