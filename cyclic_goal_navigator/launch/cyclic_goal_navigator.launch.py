@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 
 from launch import LaunchDescription
-from launch_ros.actions import Node
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
     ld = LaunchDescription()
-    
+
     # Launch arguments
     cost_threshold_arg = DeclareLaunchArgument(
         'cost_threshold',

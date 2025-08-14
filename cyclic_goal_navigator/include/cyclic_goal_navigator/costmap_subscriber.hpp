@@ -48,7 +48,7 @@ public:
   bool is_goal_valid(double goal_x, double goal_y)
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!last_grid_) return false;
+    if (!last_grid_) {return false;}
 
     auto & g = *last_grid_;
     const double res = g.info.resolution;
@@ -60,39 +60,39 @@ public:
     // ゴール位置をマップ座標に変換
     int mx = static_cast<int>(std::floor((goal_x - ox) / res));
     int my = static_cast<int>(std::floor((goal_y - oy) / res));
-    
+
     // 境界チェック
     if (mx < 0 || mx >= W || my < 0 || my >= H) {
       return false;  // マップ外はNG
     }
-    
+
     // ゴール周辺（3x3）のセルをチェック
     for (int dx = -1; dx <= 1; ++dx) {
       for (int dy = -1; dy <= 1; ++dy) {
         int check_x = mx + dx;
         int check_y = my + dy;
-        
+
         // 境界チェック
         if (check_x < 0 || check_x >= W || check_y < 0 || check_y >= H) {
           return false;  // 周辺がマップ外はNG
         }
-        
+
         // 周辺セルのコストチェック
         int idx = check_y * W + check_x;
         int8_t cost = g.data[idx];
-        
+
         // 周辺に高コスト（障害物）があるかチェック
         if (cost >= 80) {  // 80以上は危険
           return false;
         }
-        
+
         // unknownセル（-1）が多すぎる場合も危険
         if (cost < 0) {
           return false;
         }
       }
     }
-    
+
     return true;  // ゴールとして妥当
   }
 
@@ -100,7 +100,7 @@ public:
   {
     // ゴール周辺の安全性を詳細にチェック
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!last_grid_) return true;
+    if (!last_grid_) {return true;}
 
     auto & g = *last_grid_;
     const double res = g.info.resolution;
@@ -112,30 +112,30 @@ public:
     // ゴール位置をマップ座標に変換
     int mx = static_cast<int>(std::floor((goal_x - ox) / res));
     int my = static_cast<int>(std::floor((goal_y - oy) / res));
-    
+
     // 境界チェック
     if (mx < 2 || mx >= W - 2 || my < 2 || my >= H - 2) {
       return false;  // マップ境界に近すぎる
     }
-    
+
     // ゴール周辺（5x5）のセルをチェック
     int high_cost_count = 0;
     int unknown_count = 0;
     int total_cells = 0;
-    
+
     for (int dx = -2; dx <= 2; ++dx) {
       for (int dy = -2; dy <= 2; ++dy) {
         int check_x = mx + dx;
         int check_y = my + dy;
-        
+
         if (check_x < 0 || check_x >= W || check_y < 0 || check_y >= H) {
           return false;  // 範囲外
         }
-        
+
         int idx = check_y * W + check_x;
         int8_t cost = g.data[idx];
         total_cells++;
-        
+
         if (cost < 0) {  // unknown
           unknown_count++;
         } else if (cost >= 70) {  // 高コスト
@@ -143,20 +143,21 @@ public:
         }
       }
     }
-    
+
     // 判定条件
     double high_cost_ratio = static_cast<double>(high_cost_count) / total_cells;
     double unknown_ratio = static_cast<double>(unknown_count) / total_cells;
-    
+
     // 高コストセルが40%以上、またはunknownセルが60%以上なら危険
-    return (high_cost_ratio <= 0.4 && unknown_ratio <= 0.6);
+    return  high_cost_ratio <= 0.4 && unknown_ratio <= 0.6;
   }
 
-  bool is_line_free(double x0, double y0, double x1, double y1,
-                  int occ_threshold = 50, bool block_on_unknown = true)
+  bool is_line_free(
+    double x0, double y0, double x1, double y1,
+    int occ_threshold = 50, bool block_on_unknown = true)
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!last_grid_) return false;
+    if (!last_grid_) {return false;}
 
     auto & g = *last_grid_;
     const int W = g.info.width;
@@ -166,17 +167,17 @@ public:
     const double oy = g.info.origin.position.y;
 
     auto world_to_map = [&](double wx, double wy, int & mx, int & my)->bool {
-      mx = static_cast<int>(std::floor((wx - ox) / res));
-      my = static_cast<int>(std::floor((wy - oy) / res));
-      return (mx >= 0 && mx < static_cast<int>(W) && my >= 0 && my < static_cast<int>(H));
-    };
+        mx = static_cast<int>(std::floor((wx - ox) / res));
+        my = static_cast<int>(std::floor((wy - oy) / res));
+        return  mx >= 0 && mx < static_cast<int>(W) && my >= 0 && my < static_cast<int>(H);
+      };
 
     int x0i, y0i, x1i, y1i;
     if (!world_to_map(x0, y0, x0i, y0i) || !world_to_map(x1, y1, x1i, y1i)) {
       return false; // 枠外は通せない扱い
     }
 
-    auto idx = [&](int x, int y){ return y * static_cast<int>(W) + x; };
+    auto idx = [&](int x, int y){return y * static_cast<int>(W) + x;};
 
     // Bresenham
     int dx = std::abs(x1i - x0i), sx = x0i < x1i ? 1 : -1;
@@ -189,12 +190,19 @@ public:
       if ((block_on_unknown && cost < 0) || cost >= occ_threshold) {
         return false; // 遮蔽あり
       }
-      if (x == x1i && y == y1i) break;
+      if (x == x1i && y == y1i) {break;}
       const int e2 = 2 * err;
-      if (e2 >= dy) { err += dy; x += sx; }
-      if (e2 <= dx) { err += dx; y += sy; }
+      if (e2 >= dy) {err += dy; x += sx;}
+      if (e2 <= dx) {err += dx; y += sy;}
     }
     return true; // 直線上に障害なし
+  }
+
+  // テスト用のgetter
+  void set_last_grid_for_test(nav_msgs::msg::OccupancyGrid::SharedPtr grid)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    last_grid_ = grid;
   }
 
 private:
